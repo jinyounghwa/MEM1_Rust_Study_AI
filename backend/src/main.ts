@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { PerformanceInterceptor } from './common/interceptors/performance.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -10,6 +11,9 @@ async function bootstrap() {
     origin: 'http://localhost:3000',
     credentials: true,
   });
+
+  // 성능 모니터링 인터셉터 등록
+  app.useGlobalInterceptors(new PerformanceInterceptor());
 
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
   await app.listen(PORT);
