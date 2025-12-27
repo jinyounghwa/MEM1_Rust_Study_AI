@@ -71,25 +71,45 @@ export interface SessionDetail {
 
 export const api = {
   async startLearning(userId: string, topics: string | string[]) {
-    const response = await axios.post(`${API_BASE}/start`, { userId, topics });
-    return response.data;
+    try {
+      const response = await axios.post(`${API_BASE}/start`, { userId, topics });
+      return response.data;
+    } catch (error) {
+      console.error(`API Error (startLearning): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   },
 
   async sendMessage(userId: string, message: string): Promise<ChatResponse> {
-    const response = await axios.post(`${API_BASE}/chat`, { userId, message });
-    return response.data;
+    try {
+      const response = await axios.post(`${API_BASE}/chat`, { userId, message });
+      return response.data;
+    } catch (error) {
+      console.error(`API Error (sendMessage): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   },
 
   async nextTopic(userId: string) {
-    const response = await axios.post(`${API_BASE}/next-topic`, { userId });
-    return response.data;
+    try {
+      const response = await axios.post(`${API_BASE}/next-topic`, { userId });
+      return response.data;
+    } catch (error) {
+      console.error(`API Error (nextTopic): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   },
 
   async toggleRolePlay(userId: string) {
-    const response = await axios.post(`${API_BASE}/toggle-roleplay`, {
-      userId,
-    });
-    return response.data;
+    try {
+      const response = await axios.post(`${API_BASE}/toggle-roleplay`, {
+        userId,
+      });
+      return response.data;
+    } catch (error) {
+      console.error(`API Error (toggleRolePlay): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   },
 
   getExportUrl(userId: string): string {
@@ -111,7 +131,9 @@ export const api = {
       const response = await axios.get(`${API_BASE}/sessions`);
       return response.data.sessions || [];
     } catch (error) {
-      console.error('Failed to fetch sessions from database:', error);
+      if (error instanceof Error) {
+        console.error(`API Error (getSessions): ${error.message}`);
+      }
       return [];
     }
   },
@@ -122,7 +144,9 @@ export const api = {
       const response = await axios.get(`${API_BASE}/session/${userId}`);
       return response.data;
     } catch (error) {
-      console.error('Failed to load session from database:', error);
+      if (error instanceof Error) {
+        console.error(`API Error (loadSession/${userId}): ${error.message}`);
+      }
       return null;
     }
   },
@@ -132,7 +156,9 @@ export const api = {
     try {
       await axios.delete(`${API_BASE}/session/${userId}`);
     } catch (error) {
-      console.error('Failed to delete session from database:', error);
+      if (error instanceof Error) {
+        console.error(`API Error (deleteSession/${userId}): ${error.message}`);
+      }
       throw error;
     }
   },
