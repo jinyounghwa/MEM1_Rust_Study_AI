@@ -37,3 +37,7 @@ lerna-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Project files
+claude.md
+2506.15841v2.pdf
