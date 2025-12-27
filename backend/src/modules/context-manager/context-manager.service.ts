@@ -154,24 +154,7 @@ export class ContextManagerService {
 
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `당신은 한국인을 위한 Rust 프로그래밍 튜터입니다.
-
-📌 **언어 규칙 (매우 중요)**:
-- ✅ 한국어로만 답변하세요
-- ✅ Rust 관련 영문 키워드, 함수명, 변수명은 괜찮습니다 (예: Option, unwrap, match)
-- ❌ 중국어 문자는 절대 금지입니다
-- ❌ 영어 문장은 절대 금지입니다 (예: "For example", "In this case" 등)
-
-부정적 예시 (하지 말 것):
-❌ "这个概念很重要" (중국어)
-❌ "The Option type is used for null safety" (영어 문장)
-✅ "Option 타입은 값이 있을 수도, 없을 수도 있는 상황을 나타냅니다"
-
-"${session.currentTopic}" 주제를 명확하게 설명하세요.
-- 핵심 개념 중심 설명 (150-250단어)
-- 실제 사용 사례 2-3개 포함
-- 쉽고 이해하기 편한 한국어로 사용
-${previousSummary ? `- 이전 학습 내용과 연결지어 설명:\n${previousSummary.split('\n').slice(2).join('\n')}` : ''}`,
+      content: `Rust 튜터. "${session.currentTopic}"를 한국어로만 설명. Rust 코드/키워드는 OK. 중국어, 영어 문장은 금지. 핵심 개념 + 사례 2-3개.${previousSummary ? `\n\n이전: ${previousSummary.split('\n').slice(2).join('\n')}` : ''}`,
     };
 
     const userMsg: QwenMessage = {
@@ -194,79 +177,24 @@ ${previousSummary ? `- 이전 학습 내용과 연결지어 설명:\n${previousS
 
     const previousSummary = await this.getPreviousTopicsSummary(userId);
 
-    const progress =
-      session.allTopics.length > 1
-        ? `\n**학습 진행 상황**: ${session.currentTopicIndex + 1}/${session.allTopics.length} (${session.allTopics.join(' → ')})`
-        : '';
-
     const rolePlayInstruction = session.rolePlayMode
-      ? `
-
-**🎭 역할극 모드 활성화됨**
-
-사용자가 "어떻게 사용해?", "언제 사용해?", "실제로 어떻게 쓰는지 예시 보여줘" 같은 질문을 하면:
-
-1. **실제 개발 상황을 역할극으로 만들어주세요**
-2. 등장인물 설정 (예: 주니어 개발자, 시니어 개발자)
-3. 구체적인 대화 형식으로 상황 전개
-4. 학습한 개념이 **왜 필요한지**, **어떻게 해결하는지** 보여주기
-5. 반드시 실행 가능한 코드 예제 포함
-
-예시 형식:
----
-🎬 **상황**: API 서버 개발 중 널 포인터 에러로 서버가 다운됨
-
-👤 **등장인물**:
-- 민수 (주니어 개발자): Rust를 배우는 중
-- 지연 (시니어 개발자): 3년 차 Rust 개발자
-
-💬 **대화**:
-민수: "아... 또 서버가 터졌어요 ㅠㅠ"
-지연: "로그 좀 보자. 아, 이거 user.name이 None인데 unwrap() 쓴 거 때문이네."
-
-💻 **코드 예제**:
-\`\`\`rust
-// 기존 코드 (문제)
-let name = user.name.unwrap(); // 💥 panic!
-
-// 개선 코드 (해결)
-let name = user.name.unwrap_or("익명".to_string());
-\`\`\`
----
-
-이런 식으로 생생하게 만들어주세요!`
+      ? `\n[역할극 활성화: "어떻게/언제/예시" 질문 → 2-3 인물의 실제 개발 상황 대화 + 실행 가능한 코드 포함]`
       : '';
 
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `당신은 한국인을 위한 Rust 프로그래밍 튜터입니다.
+      content: `Rust 튜터. 한국어만 사용. Rust 용어/코드는 OK. 중국어, 영어 문장 금지.
 
-📌 **언어 규칙 (매우 중요)**:
-- ✅ 한국어로만 답변하세요
-- ✅ Rust 관련 영문 키워드, 함수명, 변수명은 괜찮습니다 (예: Option, Result, unwrap)
-- ❌ 중국어 문자는 절대 금지입니다
-- ❌ 중국어 또는 영어 문장은 절대 금지입니다
-
-**핵심 규칙**:
-1. 학생의 <IS>태그 내용을 평가하세요
-2. 정확하면: 칭찬 + ${
-     session.allTopics.length > 1 &&
-     session.currentTopicIndex < session.allTopics.length - 1
-       ? `"다음 주제로 진행하세요"`
-       : `"완료! 축하합니다"`
-   }
-3. 부족하면: 구체적으로 설명하고 다시 요약하라고 하세요
-4. <IS>가 없으면: "<IS>태그로 요약해주세요"라고 안내하세요
-${rolePlayInstruction}${
-  session.allTopics.length > 1 && previousSummary
-    ? `
-${previousSummary}
-
-**중요한 지시사항**:
-위의 "이전에 학습한 내용"과 "주제 간 연결고리"를 반드시 고려하세요.
-학생의 답변을 평가할 때, 이전 주제와의 관계를 언급하며 통합적으로 설명하세요.`
-    : ''
-}`,
+**규칙**: <IS>를 평가. 정확→칭찬+${
+        session.allTopics.length > 1 &&
+        session.currentTopicIndex < session.allTopics.length - 1
+          ? `"다음 주제"`
+          : `"완료"`
+      }. 부족→설명+재작성. 없음→<IS>태그 안내.${rolePlayInstruction}${
+        previousSummary
+          ? `\n\n${previousSummary}`
+          : ''
+      }`,
     };
 
     const userMsg: QwenMessage = {
