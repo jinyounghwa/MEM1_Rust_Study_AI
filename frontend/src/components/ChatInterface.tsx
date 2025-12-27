@@ -4,10 +4,30 @@ import { useState, useRef, useEffect } from 'react';
 import MessageBubble from './MessageBubble';
 import InputArea from './InputArea';
 import LoadingSpinner from './LoadingSpinner';
+import Sidebar, { ChatSession } from './Sidebar';
 import { api, ChatMessage } from '@/lib/api';
 
+interface SessionData {
+  userId: string;
+  topics: string | string[];
+  started: boolean;
+  messages: ChatMessage[];
+  tip: string;
+  stepCount: number;
+  progress: any;
+  rolePlayMode: boolean;
+  title: string;
+  startTime: number;
+}
+
 export default function ChatInterface() {
-  const [userId] = useState(() => `user-${Date.now()}`);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [sessionData, setSessionData] = useState<{ [key: string]: SessionData }>({});
+
+  // Current session state
+  const [userId, setUserId] = useState('');
   const [topics, setTopics] = useState<string[]>(['']);
   const [started, setStarted] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -19,6 +39,39 @@ export default function ChatInterface() {
   const [rolePlayMode, setRolePlayMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Initialize and restore sessions from localStorage
+  useEffect(() => {
+    const savedSessions = localStorage.getItem('rust_learn_sessions');
+    const savedSessionData = localStorage.getItem('rust_learn_session_data');
+    const savedCurrentId = localStorage.getItem('rust_learn_current_session');
+
+    if (savedSessions) {
+      const parsedSessions = JSON.parse(savedSessions);
+      setSessions(parsedSessions);
+
+      if (savedSessionData) {
+        setSessionData(JSON.parse(savedSessionData));
+      }
+
+      if (savedCurrentId && parsedSessions.some((s: ChatSession) => s.id === savedCurrentId)) {
+        loadSession(savedCurrentId, JSON.parse(savedSessionData || '{}'));
+      } else if (parsedSessions.length > 0) {
+        loadSession(parsedSessions[0].id, JSON.parse(savedSessionData || '{}'));
+      } else {
+        createNewSession();
+      }
+    } else {
+      createNewSession();
+    }
+  }, []);
+
+  // Save sessions to localStorage
+  useEffect(() => {
+    localStorage.setItem('rust_learn_sessions', JSON.stringify(sessions));
+    localStorage.setItem('rust_learn_session_data', JSON.stringify(sessionData));
+    localStorage.setItem('rust_learn_current_session', currentSessionId);
+  }, [sessions, sessionData, currentSessionId]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -27,15 +80,113 @@ export default function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
+  // Session management functions
+  const createNewSession = () => {
+    const newSessionId = `session-${Date.now()}`;
+    const newUserId = `user-${Date.now()}`;
+
+    const newSession: ChatSession = {
+      id: newSessionId,
+      topics: [''],
+      startTime: Date.now(),
+      title: '새 학습',
+    };
+
+    const newData: SessionData = {
+      userId: newUserId,
+      topics: [''],
+      started: false,
+      messages: [],
+      tip: '',
+      stepCount: 0,
+      progress: null,
+      rolePlayMode: false,
+      title: '새 학습',
+      startTime: Date.now(),
+    };
+
+    setSessions([newSession, ...sessions]);
+    setSessionData({ ...sessionData, [newSessionId]: newData });
+    loadSession(newSessionId, { ...sessionData, [newSessionId]: newData });
+  };
+
+  const loadSession = (sessionId: string, data: { [key: string]: SessionData }) => {
+    const session = data[sessionId];
+    if (!session) return;
+
+    setCurrentSessionId(sessionId);
+    setUserId(session.userId);
+    setTopics(Array.isArray(session.topics) ? session.topics : [session.topics]);
+    setStarted(session.started);
+    setMessages(session.messages);
+    setTip(session.tip);
+    setStepCount(session.stepCount);
+    setProgress(session.progress);
+    setRolePlayMode(session.rolePlayMode);
+  };
+
+  const saveCurrentSession = () => {
+    if (!currentSessionId) return;
+
+    const topicsArray = Array.isArray(topics) ? topics : [topics];
+    const validTopics = topicsArray.filter(t => t.trim());
+    const title = validTopics.length > 0
+      ? (validTopics.length === 1 ? validTopics[0] : `${validTopics[0]} 외 ${validTopics.length - 1}개`)
+      : '새 학습';
+
+    setSessionData({
+      ...sessionData,
+      [currentSessionId]: {
+        userId,
+        topics,
+        started,
+        messages,
+        tip,
+        stepCount,
+        progress,
+        rolePlayMode,
+        title,
+        startTime: sessionData[currentSessionId]?.startTime || Date.now(),
+      },
+    });
+
+    // Update session title in sessions list
+    setSessions(
+      sessions.map(s =>
+        s.id === currentSessionId ? { ...s, topics: topics, title } : s
+      )
+    );
+  };
+
+  const deleteSession = (sessionId: string) => {
+    const newSessions = sessions.filter(s => s.id !== sessionId);
+    const newData = { ...sessionData };
+    delete newData[sessionId];
+
+    setSessions(newSessions);
+    setSessionData(newData);
+
+    if (currentSessionId === sessionId) {
+      if (newSessions.length > 0) {
+        loadSession(newSessions[0].id, newData);
+      } else {
+        createNewSession();
+      }
+    }
+  };
+
   const addTopic = () => {
     if (topics.length < 5) {
       setTopics([...topics, '']);
+      saveCurrentSession();
     }
   };
 
   const removeTopic = (index: number) => {
     if (topics.length > 1) {
-      setTopics(topics.filter((_, i) => i !== index));
+      const newTopics = topics.filter((_, i) => i !== index);
+      setTopics(newTopics);
+      saveCurrentSession();
     }
   };
 
@@ -43,6 +194,7 @@ export default function ChatInterface() {
     const newTopics = [...topics];
     newTopics[index] = value;
     setTopics(newTopics);
+    saveCurrentSession();
   };
 
   const handleStart = async () => {
@@ -79,10 +231,20 @@ export default function ChatInterface() {
           completedTopics: [],
         });
       }
+
+      // Save current session
+      saveCurrentSession();
     } catch (error) {
       alert('학습 시작 실패: ' + (error as Error).message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTopicKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleStart();
     }
   };
 
@@ -101,6 +263,8 @@ export default function ChatInterface() {
       if (response.progress) {
         setProgress(response.progress);
       }
+
+      saveCurrentSession();
     } catch (error) {
       alert('메시지 전송 실패: ' + (error as Error).message);
     } finally {
@@ -118,17 +282,17 @@ export default function ChatInterface() {
         setProgress(result.progress);
 
         // 새 주제의 설명을 메시지에 추가
-        const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+        const newMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
         // 주제 전환 메시지
-        messages.push({
+        newMessages.push({
           role: 'assistant',
           content: result.message,
         });
 
         // 주제 간 연결고리 설명
         if (result.transitionTip) {
-          messages.push({
+          newMessages.push({
             role: 'assistant',
             content: `**📌 주제 간 연결고리:**\n\n${result.transitionTip}`,
           });
@@ -136,14 +300,15 @@ export default function ChatInterface() {
 
         // 새 주제의 상세한 설명
         if (result.explanation) {
-          messages.push({
+          newMessages.push({
             role: 'assistant',
             content: result.explanation,
           });
         }
 
-        setMessages((prev) => [...prev, ...messages]);
+        setMessages((prev) => [...prev, ...newMessages]);
         setTip('새로운 주제의 설명을 읽고 <IS>태그로 요약해주세요! 😊');
+        saveCurrentSession();
       }
     } catch (error) {
       alert('주제 변경 실패: ' + (error as Error).message);
@@ -170,6 +335,8 @@ export default function ChatInterface() {
           content: modeMessage,
         },
       ]);
+
+      saveCurrentSession();
     } catch (error) {
       alert('역할극 모드 변경 실패: ' + (error as Error).message);
     } finally {
@@ -196,7 +363,45 @@ export default function ChatInterface() {
 
   if (!started) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50 p-4 relative">
+        {/* Hamburger Menu Button */}
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="fixed top-4 left-4 z-30 lg:hidden p-2 hover:bg-gray-200 rounded-lg transition"
+          title="채팅 목록"
+        >
+          <svg
+            className="w-6 h-6"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M4 12h16M4 18h16"
+            />
+          </svg>
+        </button>
+
+        {/* Sidebar */}
+        <Sidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onSelectSession={(sessionId) => {
+            loadSession(sessionId, sessionData);
+            setSidebarOpen(false);
+          }}
+          onNewChat={() => {
+            createNewSession();
+            setSidebarOpen(false);
+          }}
+          onDeleteSession={deleteSession}
+        />
+
         <div className="bg-white p-8 rounded-xl shadow-lg max-w-2xl w-full">
           <h1 className="text-3xl font-bold text-gray-800 mb-2 text-center">
             🦀 RustLearn-MEM1
@@ -231,8 +436,9 @@ export default function ChatInterface() {
                     type="text"
                     value={topic}
                     onChange={(e) => updateTopic(index, e.target.value)}
+                    onKeyPress={handleTopicKeyPress}
                     placeholder={
-                      index === 0 ? '예: Option 타입' : '예: Result 타입'
+                      index === 0 ? '예: Option 타입 (Enter 누르면 시작)' : '예: Result 타입'
                     }
                     className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -278,6 +484,44 @@ export default function ChatInterface() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
+      {/* Hamburger Menu Button */}
+      <button
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="fixed top-4 left-4 z-30 lg:hidden p-2 hover:bg-gray-200 rounded-lg transition bg-white shadow"
+        title="채팅 목록"
+      >
+        <svg
+          className="w-6 h-6"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M4 6h16M4 12h16M4 18h16"
+          />
+        </svg>
+      </button>
+
+      {/* Sidebar */}
+      <Sidebar
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onSelectSession={(sessionId) => {
+          loadSession(sessionId, sessionData);
+          setSidebarOpen(false);
+        }}
+        onNewChat={() => {
+          createNewSession();
+          setSidebarOpen(false);
+        }}
+        onDeleteSession={deleteSession}
+      />
+
       {/* Header */}
       <div className="bg-white border-b px-6 py-4">
         <div className="flex justify-between items-start mb-3">
