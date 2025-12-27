@@ -5,11 +5,14 @@ import {
   OneToMany,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Message } from './message.entity';
 import { TopicISHistory } from './topic-is-history.entity';
 
 @Entity('sessions')
+@Index('idx_sessions_updated_at', ['updatedAt'])
+@Index('idx_sessions_created_at', ['createdAt'])
 export class Session {
   @PrimaryColumn('varchar', { length: 255 })
   id: string; // userId

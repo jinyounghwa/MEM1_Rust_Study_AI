@@ -15,8 +15,31 @@ export class QwenService {
   private readonly model = 'qwen2.5:7b';
   private retryCount = 0;
   private readonly maxRetries = 2;
+  private responseCache = new Map<string, { response: string; timestamp: number }>();
+  private readonly CACHE_TTL = 3600000; // 1시간
 
+  /**
+   * Get cache key from messages
+   */
+  private getCacheKey(messages: QwenMessage[]): string {
+    const messageContent = messages
+      .map((m) => `${m.role}:${m.content}`)
+      .join('|');
+    return Buffer.from(messageContent).toString('base64').substring(0, 100);
+  }
+
+  /**
+   * Non-streaming chat (전체 응답을 기다리는 방식)
+   */
   async chat(messages: QwenMessage[]): Promise<string> {
+    // 캐시 확인
+    const cacheKey = this.getCacheKey(messages);
+    const cached = this.responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      console.log('📦 Cache hit - returning cached response');
+      return cached.response;
+    }
+
     try {
       const response = await axios.post<QwenResponse>(
         this.ollamaUrl,
@@ -25,15 +48,15 @@ export class QwenService {
           messages: messages,
           stream: false,
           options: {
-            temperature: 0.6,        // 더 일관된 응답 (0.7 → 0.6)
-            top_p: 0.85,              // 추론 속도 개선 (0.9 → 0.85)
-            num_predict: 1200,         // 응답 길이 제한으로 속도 개선 (2000 → 1200)
-            num_ctx: 2048,             // 컨텍스트 윈도우 최적화
-            repeat_penalty: 1.1,       // 반복 패턴 방지로 효율성 증대
+            temperature: 0.6,
+            top_p: 0.85,
+            num_predict: 1000, // 900 → 1000 (약간 더 자세한 응답)
+            num_ctx: 2048,
+            repeat_penalty: 1.1,
           },
         },
         {
-          timeout: 90000,            // 타임아웃 단축 (120초 → 90초)
+          timeout: 90000,
         },
       );
 
@@ -68,6 +91,20 @@ export class QwenService {
         return this.chat(retryMessages);
       }
 
+      // 캐시에 저장
+      this.responseCache.set(cacheKey, {
+        response: cleaningResult.cleaned,
+        timestamp: Date.now(),
+      });
+
+      // 캐시 크기 제한 (최대 100개)
+      if (this.responseCache.size > 100) {
+        const firstKey = this.responseCache.keys().next().value;
+        if (firstKey) {
+          this.responseCache.delete(firstKey);
+        }
+      }
+
       // 정제된 응답 반환
       return cleaningResult.cleaned;
     } catch (error) {
@@ -82,6 +119,77 @@ export class QwenService {
           `Qwen API 오류: ${error.message}`,
           HttpStatus.INTERNAL_SERVER_ERROR,
         );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Streaming chat (토큰 하나씩 전송하는 방식)
+   * EventSource로 실시간 응답 받기 위함
+   */
+  async chatStream(
+    messages: QwenMessage[],
+    onToken: (token: string) => void,
+  ): Promise<string> {
+    try {
+      const response = await axios.post(
+        this.ollamaUrl,
+        {
+          model: this.model,
+          messages: messages,
+          stream: true, // 스트리밍 활성화
+          options: {
+            temperature: 0.6,
+            top_p: 0.85,
+            num_predict: 1000,
+            num_ctx: 2048,
+            repeat_penalty: 1.1,
+          },
+        },
+        {
+          timeout: 120000,
+          responseType: 'stream',
+        },
+      );
+
+      return new Promise((resolve, reject) => {
+        let fullContent = '';
+
+        response.data.on('data', (chunk: Buffer) => {
+          const lines = chunk.toString().split('\n');
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const json = JSON.parse(line);
+                if (json.message?.content && typeof json.message.content === 'string') {
+                  const token = json.message.content;
+                  fullContent += token;
+                  onToken(token); // 토큰 콜백
+                }
+              } catch {
+                // JSON 파싱 실패 무시
+              }
+            }
+          }
+        });
+
+        response.data.on('end', () => {
+          // 중국어 정제
+          const cleaningResult = ResponseCleaner.clean(fullContent);
+          resolve(cleaningResult.cleaned);
+        });
+
+        response.data.on('error', reject);
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        if (error.code === 'ECONNREFUSED') {
+          throw new HttpException(
+            'Ollama 서버에 연결할 수 없습니다.',
+            HttpStatus.SERVICE_UNAVAILABLE,
+          );
+        }
       }
       throw error;
     }

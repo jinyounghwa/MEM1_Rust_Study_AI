@@ -6,11 +6,14 @@ import {
   JoinColumn,
   CreateDateColumn,
   Unique,
+  Index,
 } from 'typeorm';
 import { Session } from './session.entity';
 
 @Entity('topic_is_history')
 @Unique(['sessionId', 'topic'])
+@Index('idx_topic_is_history_session_id', ['sessionId'])
+@Index('idx_topic_is_history_topic', ['topic'])
 export class TopicISHistory {
   @PrimaryGeneratedColumn()
   id: number;

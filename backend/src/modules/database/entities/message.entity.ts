@@ -5,10 +5,14 @@ import {
   ManyToOne,
   JoinColumn,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { Session } from './session.entity';
 
 @Entity('messages')
+@Index('idx_messages_session_id', ['sessionId'])
+@Index('idx_messages_session_created', ['sessionId', 'createdAt'])
+@Index('idx_messages_role', ['role'])
 export class Message {
   @PrimaryGeneratedColumn()
   id: number;
