@@ -84,7 +84,7 @@ export default function ChatInterface() {
                 startTime: sessionToLoad.startTime,
               };
               setSessionData(newSessionData);
-              loadSession(sessionToLoad.id, newSessionData);
+              await loadSession(sessionToLoad.id, newSessionData);
               localStorage.setItem('rust_learn_current_session', sessionToLoad.id);
               return;
             }
@@ -92,14 +92,14 @@ export default function ChatInterface() {
         }
 
         // 4. 데이터베이스에서 로드 실패 시 localStorage 사용
-        loadFromLocalStorage();
+        await loadFromLocalStorage();
       } catch (error) {
         console.log('데이터베이스 연결 실패, localStorage에서 로드합니다.');
-        loadFromLocalStorage();
+        await loadFromLocalStorage();
       }
     };
 
-    const loadFromLocalStorage = () => {
+    const loadFromLocalStorage = async () => {
       const savedSessions = localStorage.getItem('rust_learn_sessions');
       const savedSessionData = localStorage.getItem('rust_learn_session_data');
       const savedCurrentId = localStorage.getItem('rust_learn_current_session');
@@ -113,14 +113,14 @@ export default function ChatInterface() {
         }
 
         if (savedCurrentId && parsedSessions.some((s: ChatSession) => s.id === savedCurrentId)) {
-          loadSession(savedCurrentId, JSON.parse(savedSessionData || '{}'));
+          await loadSession(savedCurrentId, JSON.parse(savedSessionData || '{}'));
         } else if (parsedSessions.length > 0) {
-          loadSession(parsedSessions[0].id, JSON.parse(savedSessionData || '{}'));
+          await loadSession(parsedSessions[0].id, JSON.parse(savedSessionData || '{}'));
         } else {
-          createNewSession();
+          await createNewSession();
         }
       } else {
-        createNewSession();
+        await createNewSession();
       }
     };
 
@@ -148,7 +148,7 @@ export default function ChatInterface() {
   }, [messages]);
 
   // Session management functions
-  const createNewSession = () => {
+  const createNewSession = async () => {
     const newSessionId = `session-${Date.now()}`;
     const newUserId = `user-${Date.now()}`;
 
@@ -174,22 +174,46 @@ export default function ChatInterface() {
 
     setSessions([newSession, ...sessions]);
     setSessionData({ ...sessionData, [newSessionId]: newData });
-    loadSession(newSessionId, { ...sessionData, [newSessionId]: newData });
+    await loadSession(newSessionId, { ...sessionData, [newSessionId]: newData });
   };
 
-  const loadSession = (sessionId: string, data: { [key: string]: SessionData }) => {
-    const session = data[sessionId];
-    if (!session) return;
+  const loadSession = async (sessionId: string, data?: { [key: string]: SessionData }) => {
+    try {
+      // 먼저 메모리 캐시에서 확인
+      if (data?.[sessionId]) {
+        const session = data[sessionId];
+        setCurrentSessionId(sessionId);
+        setUserId(session.userId);
+        setTopics(Array.isArray(session.topics) ? session.topics : [session.topics]);
+        setStarted(session.started);
+        setMessages(session.messages);
+        setTip(session.tip);
+        setStepCount(session.stepCount);
+        setProgress(session.progress);
+        setRolePlayMode(session.rolePlayMode);
+        return;
+      }
 
-    setCurrentSessionId(sessionId);
-    setUserId(session.userId);
-    setTopics(Array.isArray(session.topics) ? session.topics : [session.topics]);
-    setStarted(session.started);
-    setMessages(session.messages);
-    setTip(session.tip);
-    setStepCount(session.stepCount);
-    setProgress(session.progress);
-    setRolePlayMode(session.rolePlayMode);
+      // 메모리 캐시에 없으면 DB에서 로드
+      const sessionDetail = await api.loadSession(sessionId);
+      if (sessionDetail?.session) {
+        const sess = sessionDetail.session;
+        setCurrentSessionId(sessionId);
+        setUserId(sess.userId);
+        setTopics(Array.isArray(sess.topics) ? sess.topics : [sess.topics]);
+        setStarted(true);
+        setMessages(sessionDetail.messages.map(msg => ({
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+        })));
+        setTip(sess.currentTopic ? `현재 주제: ${sess.currentTopic}` : '');
+        setStepCount(sess.stepCount || 0);
+        setProgress(sess.progress || null);
+        setRolePlayMode(sess.rolePlayMode || false);
+      }
+    } catch (error) {
+      console.error('Failed to load session:', error);
+    }
   };
 
   const saveCurrentSession = () => {
@@ -227,11 +251,8 @@ export default function ChatInterface() {
 
   const deleteSession = async (sessionId: string) => {
     try {
-      // 데이터베이스에서 세션 삭제
-      const userId = sessionData[sessionId]?.userId;
-      if (userId) {
-        await api.deleteSession(userId);
-      }
+      // sessionId가 실제로는 userId와 같음 (DB에서 session.id === userId)
+      await api.deleteSession(sessionId);
     } catch (error) {
       console.error('Failed to delete session from database:', error);
     }
@@ -246,9 +267,9 @@ export default function ChatInterface() {
 
     if (currentSessionId === sessionId) {
       if (newSessions.length > 0) {
-        loadSession(newSessions[0].id, newData);
+        await loadSession(newSessions[0].id, newData);
       } else {
-        createNewSession();
+        await createNewSession();
       }
     }
   };
@@ -469,12 +490,12 @@ export default function ChatInterface() {
           onClose={() => setSidebarOpen(false)}
           sessions={sessions}
           currentSessionId={currentSessionId}
-          onSelectSession={(sessionId) => {
-            loadSession(sessionId, sessionData);
+          onSelectSession={async (sessionId) => {
+            await loadSession(sessionId, sessionData);
             setSidebarOpen(false);
           }}
-          onNewChat={() => {
-            createNewSession();
+          onNewChat={async () => {
+            await createNewSession();
             setSidebarOpen(false);
           }}
           onDeleteSession={deleteSession}
@@ -589,12 +610,12 @@ export default function ChatInterface() {
         onClose={() => setSidebarOpen(false)}
         sessions={sessions}
         currentSessionId={currentSessionId}
-        onSelectSession={(sessionId) => {
-          loadSession(sessionId, sessionData);
+        onSelectSession={async (sessionId) => {
+          await loadSession(sessionId, sessionData);
           setSidebarOpen(false);
         }}
-        onNewChat={() => {
-          createNewSession();
+        onNewChat={async () => {
+          await createNewSession();
           setSidebarOpen(false);
         }}
         onDeleteSession={deleteSession}
