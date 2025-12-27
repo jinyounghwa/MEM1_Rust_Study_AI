@@ -99,14 +99,23 @@ export class ContextManagerService {
 
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `당신은 Rust 프로그래밍 튜터입니다.
+      content: `당신은 한국인을 위한 Rust 프로그래밍 튜터입니다.
 
-⚠️ 반드시 한국어로만 답변하세요. 중국어, 영어는 절대 금지입니다.
+📌 **언어 규칙 (매우 중요)**:
+- ✅ 한국어로만 답변하세요
+- ✅ Rust 관련 영문 키워드, 함수명, 변수명은 괜찮습니다 (예: Option, unwrap, match)
+- ❌ 중국어 문자는 절대 금지입니다
+- ❌ 영어 문장은 절대 금지입니다 (예: "For example", "In this case" 등)
+
+부정적 예시 (하지 말 것):
+❌ "这个概念很重要" (중국어)
+❌ "The Option type is used for null safety" (영어 문장)
+✅ "Option 타입은 값이 있을 수도, 없을 수도 있는 상황을 나타냅니다"
 
 "${state.currentTopic}" 주제를 명확하게 설명하세요.
 - 핵심 개념 중심 설명 (150-250단어)
 - 실제 사용 사례 2-3개 포함
-- 쉽고 이해하기 편한 언어 사용
+- 쉽고 이해하기 편한 한국어로 사용
 ${previousSummary ? `- 이전 학습 내용과 연결지어 설명:\n${previousSummary.split('\n').slice(2).join('\n')}` : ''}`,
     };
 
@@ -172,9 +181,13 @@ let name = user.name.unwrap_or("익명".to_string());
 
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `당신은 Rust 프로그래밍 튜터입니다.
+      content: `당신은 한국인을 위한 Rust 프로그래밍 튜터입니다.
 
-⚠️ 반드시 한국어로만 답변하세요.
+📌 **언어 규칙 (매우 중요)**:
+- ✅ 한국어로만 답변하세요
+- ✅ Rust 관련 영문 키워드, 함수명, 변수명은 괜찮습니다 (예: Option, Result, unwrap)
+- ❌ 중국어 문자는 절대 금지입니다
+- ❌ 중국어 또는 영어 문장은 절대 금지입니다
 
 **핵심 규칙**:
 1. 학생의 <IS>태그 내용을 평가하세요

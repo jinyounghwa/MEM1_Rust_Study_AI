@@ -63,6 +63,11 @@ export default function ChatInterface() {
     } else {
       createNewSession();
     }
+
+    // Open sidebar by default on desktop
+    if (window.innerWidth >= 1024) {
+      setSidebarOpen(true);
+    }
   }, []);
 
   // Save sessions to localStorage
@@ -363,11 +368,11 @@ export default function ChatInterface() {
 
   if (!started) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50 p-4 relative">
+      <div className={`min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50 p-4 relative transition-all duration-300 ${sidebarOpen ? 'lg:pl-64' : ''}`}>
         {/* Hamburger Menu Button */}
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="fixed top-4 left-4 z-30 lg:hidden p-2 hover:bg-gray-200 rounded-lg transition"
+          className={`fixed top-4 left-4 z-30 p-2 hover:bg-gray-200 rounded-lg transition bg-white shadow ${sidebarOpen ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
           title="채팅 목록"
         >
           <svg
@@ -483,11 +488,11 @@ export default function ChatInterface() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className={`flex flex-col h-screen bg-gray-50 transition-all duration-300 ${sidebarOpen ? 'lg:pl-64' : ''}`}>
       {/* Hamburger Menu Button */}
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="fixed top-4 left-4 z-30 lg:hidden p-2 hover:bg-gray-200 rounded-lg transition bg-white shadow"
+        className={`fixed top-4 left-4 z-30 p-2 hover:bg-gray-200 rounded-lg transition bg-white shadow ${sidebarOpen ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
         title="채팅 목록"
       >
         <svg
