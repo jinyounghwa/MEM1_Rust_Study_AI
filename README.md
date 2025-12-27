@@ -4,7 +4,7 @@
 [![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=flat-square&logo=nestjs&logoColor=white)](https://nestjs.com/)
 [![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Qwen](https://img.shields.io/badge/Qwen%202.5-FF6B35?style=flat-square)](https://ollama.ai/)
+[![MLX](https://img.shields.io/badge/MLX-Apple%20Silicon-FF6B35?style=flat-square)](https://ml-explore.github.io/mlx/build/html/index.html)
 
 MEM1(Memory-Efficient Mechanism) 논문의 원리를 기반으로 개발된, AI가 지원하는 혁신적인 Rust 학습 플랫폼입니다. 데이터베이스 지속성으로 학습 내용을 영구 보존하고, 일정한 메모리 사용량을 유지하면서도 효율적인 학습을 제공합니다.
 
@@ -66,8 +66,9 @@ MEM1(Memory-Efficient Mechanism) 논문의 원리를 기반으로 개발된, AI�
 
 ### 📋 사전 요구사항
 
-- **Ollama** 설치 및 실행 중
-- **Qwen 2.5 7B** 모델 설치 완료
+- **Apple Silicon Mac** (MLX는 Apple Silicon 전용)
+- **MLX & MLX-LM** 설치 완료
+- **Qwen 2.5 7B (MLX 양자화)** 모델 자동 다운로드됨
 - **PostgreSQL 12+** 설치 및 실행 중
 - **Node.js 18+** 설치
 
@@ -94,18 +95,16 @@ sudo service postgresql start
 sudo -u postgres psql  # 접속 확인
 ```
 
-#### 2️⃣ Ollama 확인
+#### 2️⃣ MLX & MLX-LM 설치
 
 ```bash
-ollama list  # qwen2.5:7b 있는지 확인
+# Python 가상환경 생성
+python3 -m venv mlx_env
+source mlx_env/bin/activate
 
-# Qwen 모델 없다면 설치
-ollama pull qwen2.5:7b
-
-# Ollama 서비스 실행 확인
-curl http://localhost:11434/api/tags
+# MLX 및 MLX-LM 설치
+pip install mlx mlx-lm
 ```
-
 #### 3️⃣ 버전 확인
 
 ```bash
@@ -130,9 +129,10 @@ DB_PASSWORD=postgres
 DB_DATABASE=rustlearn_mem1
 DB_SYNCHRONIZE=true
 
-# Ollama LLM 설정
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
+# MLX Server 설정 (OpenAI 호환 API)
+MLX_SERVER_URL=http://localhost:8080/v1
+MLX_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
+MLX_TIMEOUT=60000
 
 # 애플리케이션 설정
 NODE_ENV=development
@@ -196,14 +196,24 @@ npm run dev
 # ✅ http://localhost:3000에서 실행됨
 ```
 
-#### 4️⃣ Ollama 실행 (또 다른 터미널)
+#### 4️⃣ MLX 서버 실행 (또 다른 터미널)
 ```bash
-# Ollama가 이미 백그라운드에서 실행 중인지 확인
-ollama serve
+# MLX 가상환경 활성화
+source mlx_env/bin/activate
 
-# 또는 macOS인 경우:
-# Ollama.app 실행
+# MLX 서버 시작 (자동으로 Qwen 2.5 7B 모델 로드)
+python3 -m mlx_lm.server --model mlx-community/Qwen2.5-7B-Instruct-4bit --host 127.0.0.1 --port 8080
+
+# 또는 python3 mlx_server.py 사용
+# ✅ 다음 메시지가 보일 때까지 대기:
+# 🚀 Starting MLX LLM Server...
+# ✨ Server running at http://localhost:8080/v1
 ```
+
+**💾 첫 실행 시 주의**:
+- Qwen 2.5 7B 모델 다운로드 (최초 1회, 약 5-15분)
+- 다음부터는 캐시된 모델 사용으로 빠르게 시작됨
+- 실시간 진행 상황 확인: `./mlx_dashboard.sh`
 
 #### 5️⃣ 브라우저에서 접속
 ```
@@ -214,11 +224,15 @@ http://localhost:3000
 
 **모든 서비스 정상 작동 확인**:
 ```bash
-# 1️⃣ Backend API
-curl http://localhost:3001/api/rust-learn/health
-# 응답: {"status":"ok","ollama":"connected","timestamp":"..."}
+# 1️⃣ MLX Server
+curl http://localhost:8080/v1/models
+# 응답: {"object":"list","data":[{"id":"mlx-community/Qwen2.5-7B-Instruct-4bit","object":"model"}]}
 
-# 2️⃣ PostgreSQL 연결 및 테이블 확인
+# 2️⃣ Backend API
+curl http://localhost:3001/api/rust-learn/health
+# 응답: {"status":"ok","mlx":"connected","timestamp":"..."}
+
+# 3️⃣ PostgreSQL 연결 및 테이블 확인
 psql -U postgres -d rustlearn_mem1 -c "\dt"
 
 # 응답 예시:
@@ -229,24 +243,29 @@ psql -U postgres -d rustlearn_mem1 -c "\dt"
 #  public | sessions        | table | postgres
 #  public | topic_is_history| table | postgres
 
-# 3️⃣ Frontend
+# 4️⃣ Frontend
 # 브라우저에서 http://localhost:3000 접속 확인
 ```
 
-**🐛 문제 발생 시**:
+**🐛 문제 해결**:
 ```bash
-# Backend 데이터베이스 로그 확인
-tail -f /tmp/backend.log
+# MLX 다운로드 진행 상황 확인
+./monitor_mlx.sh
 
-# PostgreSQL 로그 확인
-# macOS: /usr/local/var/log/postgres.log
-# Linux: /var/log/postgresql/
+# Backend 빌드 및 시작 오류
+cd backend && npm run build
 
-# 포트 사용 중 확인
+# PostgreSQL 연결 오류
+psql -U postgres -h localhost -d rustlearn_mem1
+
+# 포트 충돌 확인
 lsof -i :3000  # Frontend
 lsof -i :3001  # Backend
 lsof -i :5432  # PostgreSQL
-lsof -i :11434 # Ollama
+lsof -i :8080  # MLX Server
+
+# 실시간 모니터링 대시보드
+./mlx_dashboard.sh
 ```
 
 ---
@@ -445,7 +464,7 @@ MEM1_Rust_Study_AI/
 - **Framework**: NestJS (TypeScript)
 - **Database**: PostgreSQL 12+ with TypeORM
 - **HTTP Client**: Axios
-- **LLM Integration**: Ollama REST API
+- **LLM Integration**: MLX Server (OpenAI Compatible API)
 - **Port**: 3001
 
 ### Frontend
@@ -465,11 +484,12 @@ MEM1_Rust_Study_AI/
 - **Indexes**: 빠른 조회를 위한 6개 인덱스
 
 ### LLM
-- **Model**: Qwen 2.5 7B
-- **Runtime**: Ollama
-- **Context Window**: 2048 tokens (최적화)
+- **Model**: Qwen 2.5 7B Instruct (4-bit Quantized)
+- **Runtime**: MLX (Apple Silicon)
+- **Server**: mlx-lm.server (OpenAI Compatible)
 - **Temperature**: 0.6 (안정성 강화)
 - **Response Caching**: 1시간 TTL, 최대 100개
+- **Response Cleaning**: 자동 중국어 제거 및 재시도
 
 ---
 

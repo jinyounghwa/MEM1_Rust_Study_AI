@@ -162,4 +162,50 @@ export const api = {
       throw error;
     }
   },
+
+  // 스트리밍 채팅 메시지 전송
+  async *streamMessage(userId: string, message: string) {
+    try {
+      const response = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId, message }),
+      });
+
+      if (!response.body) throw new Error('ReadableStream not supported');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || ''; // 마지막 불완전한 라인은 버퍼에 유지
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          
+          try {
+            const jsonStr = trimmed.substring(6);
+            const data = JSON.parse(jsonStr);
+            yield data;
+          } catch (e) {
+            console.warn('SSE parsing error:', e);
+          }
+        }
+      }
+    } catch (error) {
+       console.error(`API Error (streamMessage): ${error instanceof Error ? error.message : String(error)}`);
+       throw error;
+    }
+  },
 };

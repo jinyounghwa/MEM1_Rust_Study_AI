@@ -154,7 +154,17 @@ export class ContextManagerService {
 
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `Rust 튜터. "${session.currentTopic}"를 한국어로만 설명. Rust 코드/키워드는 OK. 중국어, 영어 문장은 금지. 핵심 개념 + 사례 2-3개.${previousSummary ? `\n\n이전: ${previousSummary.split('\n').slice(2).join('\n')}` : ''}`,
+      content: `당신은 Rust 전문 튜터입니다.
+
+⚠️ **KOREAN ONLY**: 반드시 한국어로만 답변하세요. 중국어, 영어 텍스트 금지. Rust 코드만 영어.
+
+"${session.currentTopic}" 설명:
+1. 개념 정의 (한 문장)
+2. 코드 예시 2-3개
+3. 주의할 점
+4. <IS> 태그로 요약 유도
+
+${previousSummary ? `\n이전 학습: ${previousSummary.split('\n').slice(2).join('\n')}` : ''}`,
     };
 
     const userMsg: QwenMessage = {
@@ -176,34 +186,57 @@ export class ContextManagerService {
     }
 
     const previousSummary = await this.getPreviousTopicsSummary(userId);
-
     const rolePlayInstruction = session.rolePlayMode
-      ? `\n[역할극 활성화: "어떻게/언제/예시" 질문 → 2-3 인물의 실제 개발 상황 대화 + 실행 가능한 코드 포함]`
+      ? `\n[📢 실무자 모드 ON: 모든 설명은 "현업 개발자" 관점에서 실제 사용 사례 위주로 설명하세요.]`
       : '';
 
+    // 1. CoT (Chain Of Thought) System Prompt
     const systemPrompt: QwenMessage = {
       role: 'system',
-      content: `Rust 튜터. 한국어만 사용. Rust 용어/코드는 OK. 중국어, 영어 문장 금지.
+      content: `당신은 Rust 전문 튜터입니다.
 
-**규칙**: <IS>를 평가. 정확→칭찬+${
+⚠️ **CRITICAL: KOREAN ONLY (한국어만 사용)**
+- 반드시 한국어로만 답변하세요
+- 중국어, 일본어, 영어 텍스트는 절대 금지
+- Rust 코드와 함수명, 키워드만 영어 사용 가능
+- 예: "Option이란 Some과 None으로..." (O), "Option ，Some None" (X)
+
+답변 구조:
+1. **💡 개념 정의**: 한 문장으로 명확히 정의
+2. **💻 코드 예시**: 실행 가능한 Rust 코드 (주석은 한국어)
+3. **⚠️ 주의할 점**: 초보자가 자주 하는 실수
+4. **✨ 핵심**: <IS> 태그로 요약 유도
+
+학습자 반응:
+- <IS>요약</IS> 포함 → "정확합니다!"라고 칭찬하고 ${
         session.allTopics.length > 1 &&
         session.currentTopicIndex < session.allTopics.length - 1
           ? `"다음 주제"`
           : `"완료"`
-      }. 부족→설명+재작성. 없음→<IS>태그 안내.${rolePlayInstruction}${
-        previousSummary
-          ? `\n\n${previousSummary}`
-          : ''
-      }`,
+      }로 안내
+- <IS> 미포함 → <IS> 태그 사용 요청
+
+${rolePlayInstruction}
+${previousSummary ? `\n\n${previousSummary}` : ''}`,
     };
 
-    const userMsg: QwenMessage = {
-      role: 'user',
-      content: userMessage,
-    };
+    // 2. Short-term Memory (Recent Context)
+    // Fetch all messages (including the current one just saved)
+    const allMessages = await this.messageRepo.findBySessionId(userId);
+    
+    // Take the last 6 messages (3 turns) to maintain context
+    const recentMessages = allMessages.slice(-6).map((msg) => ({
+      role: msg.role as 'user' | 'assistant',
+      content: msg.content,
+    }));
 
-    // ✅ MEM1 Principle: Only system prompt + current message (no conversation history)
-    return [systemPrompt, userMsg];
+    // If for some reason the DB save didn't happen or list is empty, ensure current message is there
+    const hasCurrent = recentMessages.some(m => m.content === userMessage && m.role === 'user');
+    if (!hasCurrent) {
+        recentMessages.push({ role: 'user', content: userMessage });
+    }
+
+    return [systemPrompt, ...recentMessages];
   }
 
   /**

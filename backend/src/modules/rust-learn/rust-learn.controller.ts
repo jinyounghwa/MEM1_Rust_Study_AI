@@ -93,6 +93,24 @@ export class RustLearnController {
     }
   }
 
+  @Post('chat/stream')
+  async streamChat(
+    @Body() body: { userId: string; message: string },
+    @Res() res: Response,
+  ) {
+    const { userId, message } = body;
+    try {
+      await this.rustLearnService.chatStream(userId, message, res);
+    } catch (error) {
+      console.error('Streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Stream processing failed' });
+      } else {
+        res.end();
+      }
+    }
+  }
+
   /**
    * 다음 주제로 이동
    */
@@ -228,7 +246,7 @@ export class RustLearnController {
   }
 
   /**
-   * Ollama 상태 확인
+   * MLX 서버 상태 확인
    */
   @Get('health')
   async healthCheck() {
@@ -236,7 +254,7 @@ export class RustLearnController {
 
     return {
       status: isHealthy ? 'ok' : 'error',
-      ollama: isHealthy ? 'connected' : 'disconnected',
+      mlx: isHealthy ? 'connected' : 'disconnected',
       timestamp: new Date().toISOString(),
     };
   }

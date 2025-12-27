@@ -348,22 +348,41 @@ export default function ChatInterface() {
   };
 
   const handleSendMessage = async (message: string) => {
+    // 1. Add user message
     setMessages((prev) => [...prev, { role: 'user', content: message }]);
     setLoading(true);
     setTip('');
+    
+    // 2. Add empty assistant message for streaming
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      const response = await api.sendMessage(userId, message);
-
-      setMessages((prev) => [...prev, { role: 'assistant', content: response.response }]);
-      setTip(response.tip);
-      setStepCount(response.currentStep);
-
-      if (response.progress) {
-        setProgress(response.progress);
+      // 3. Start streaming
+      for await (const data of api.streamMessage(userId, message)) {
+        if (data.type === 'token' && typeof data.content === 'string') {
+          // Append token to the last message
+          setMessages((prev) => {
+             const newMessages = [...prev];
+             const lastMsg = newMessages[newMessages.length - 1];
+             if (lastMsg.role === 'assistant') {
+                 // Create a new object to trigger re-render if needed, though mutation is tricky in React
+                 // But sticking to immutable pattern:
+                 newMessages[newMessages.length - 1] = {
+                     ...lastMsg,
+                     content: lastMsg.content + data.content
+                 };
+             }
+             return newMessages;
+          });
+        } else if (data.type === 'done') {
+          // Final metadata update
+          if (data.tip) setTip(data.tip);
+          if (data.currentStep) setStepCount(data.currentStep);
+          if (data.progress) setProgress(data.progress);
+          
+          saveCurrentSession();
+        }
       }
-
-      saveCurrentSession();
     } catch (error) {
       alert('메시지 전송 실패: ' + (error as Error).message);
     } finally {

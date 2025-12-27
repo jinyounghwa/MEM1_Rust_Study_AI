@@ -11,8 +11,10 @@ interface QwenResponse {
 
 @Injectable()
 export class QwenService {
-  private readonly ollamaUrl = 'http://localhost:11434/api/chat';
-  private readonly model = 'qwen2.5:7b';
+  // MLX Server (mlx-lm.server)는 기본적으로 8080 포트에서 OpenAI 호환 API를 제공합니다.
+  private readonly baseUrl = process.env.MLX_SERVER_URL || 'http://localhost:8080/v1';
+  private readonly model = process.env.MLX_MODEL || 'mlx-community/Qwen2.5-7B-Instruct-4bit';
+  private readonly timeout = parseInt(process.env.MLX_TIMEOUT || '60000', 10);
   private retryCount = 0;
   private readonly maxRetries = 2;
   private responseCache = new Map<string, { response: string; timestamp: number }>();
@@ -32,6 +34,9 @@ export class QwenService {
    * Non-streaming chat (전체 응답을 기다리는 방식)
    */
   async chat(messages: QwenMessage[]): Promise<string> {
+    // 각 요청마다 재시도 카운트 초기화
+    this.retryCount = 0;
+
     // 캐시 확인
     const cacheKey = this.getCacheKey(messages);
     const cached = this.responseCache.get(cacheKey);
@@ -41,26 +46,22 @@ export class QwenService {
     }
 
     try {
-      const response = await axios.post<QwenResponse>(
-        this.ollamaUrl,
+      const response = await axios.post(
+        `${this.baseUrl}/chat/completions`,
         {
           model: this.model,
           messages: messages,
           stream: false,
-          options: {
-            temperature: 0.6,
-            top_p: 0.85,
-            num_predict: 1000, // 900 → 1000 (약간 더 자세한 응답)
-            num_ctx: 2048,
-            repeat_penalty: 1.1,
-          },
+          temperature: 0.6,
+          top_p: 0.85,
+          max_tokens: 800,
         },
         {
-          timeout: 90000,
+          timeout: this.timeout,
         },
       );
 
-      let content = response.data.message.content;
+      let content = response.data.choices[0].message.content;
 
       // 중국어 정제
       const cleaningResult = ResponseCleaner.clean(content);
@@ -111,12 +112,12 @@ export class QwenService {
       if (axios.isAxiosError(error)) {
         if (error.code === 'ECONNREFUSED') {
           throw new HttpException(
-            'Ollama 서버에 연결할 수 없습니다. Ollama가 실행 중인지 확인해주세요. (http://localhost:11434)',
+            'MLX 서버에 연결할 수 없습니다. mlx-lm.server를 실행 중인지 확인해주세요. (http://localhost:8080)',
             HttpStatus.SERVICE_UNAVAILABLE,
           );
         }
         throw new HttpException(
-          `Qwen API 오류: ${error.message}`,
+          `MLX API 오류: ${error.message}`,
           HttpStatus.INTERNAL_SERVER_ERROR,
         );
       }
@@ -134,21 +135,17 @@ export class QwenService {
   ): Promise<string> {
     try {
       const response = await axios.post(
-        this.ollamaUrl,
+        `${this.baseUrl}/chat/completions`,
         {
           model: this.model,
           messages: messages,
-          stream: true, // 스트리밍 활성화
-          options: {
-            temperature: 0.6,
-            top_p: 0.85,
-            num_predict: 1000,
-            num_ctx: 2048,
-            repeat_penalty: 1.1,
-          },
+          stream: true,
+          temperature: 0.6,
+          top_p: 0.85,
+          max_tokens: 1000,
         },
         {
-          timeout: 120000,
+          timeout: this.timeout * 2,  // 스트리밍은 더 긴 타임아웃
           responseType: 'stream',
         },
       );
@@ -159,16 +156,19 @@ export class QwenService {
         response.data.on('data', (chunk: Buffer) => {
           const lines = chunk.toString().split('\n');
           for (const line of lines) {
-            if (line.trim()) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine || trimmedLine === 'data: [DONE]') continue;
+            
+            if (trimmedLine.startsWith('data: ')) {
               try {
-                const json = JSON.parse(line);
-                if (json.message?.content && typeof json.message.content === 'string') {
-                  const token = json.message.content;
+                const json = JSON.parse(trimmedLine.substring(6));
+                const token = json.choices[0]?.delta?.content || '';
+                if (token) {
                   fullContent += token;
-                  onToken(token); // 토큰 콜백
+                  onToken(token);
                 }
-              } catch {
-                // JSON 파싱 실패 무시
+              } catch (e) {
+                // 파싱 에러 무시
               }
             }
           }
@@ -186,7 +186,7 @@ export class QwenService {
       if (axios.isAxiosError(error)) {
         if (error.code === 'ECONNREFUSED') {
           throw new HttpException(
-            'Ollama 서버에 연결할 수 없습니다.',
+            'MLX 서버에 연결할 수 없습니다.',
             HttpStatus.SERVICE_UNAVAILABLE,
           );
         }
@@ -197,7 +197,7 @@ export class QwenService {
 
   async healthCheck(): Promise<boolean> {
     try {
-      await axios.get('http://localhost:11434/api/tags');
+      await axios.get(`${this.baseUrl}/models`);
       return true;
     } catch {
       return false;

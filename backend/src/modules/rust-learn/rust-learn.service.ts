@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Response } from 'express';
 import { ContextManagerService } from '../context-manager/context-manager.service';
 import { QwenService } from '../qwen/qwen.service';
 import { MessageRepository } from '../database/repositories/message.repository';
@@ -10,6 +11,127 @@ export class RustLearnService {
     private qwen: QwenService,
     private messageRepo: MessageRepository,
   ) {}
+
+  /**
+   * Streaming chat logic
+   */
+  async chatStream(userId: string, message: string, res: Response) {
+    // 1. Save user message to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'user',
+      content: message,
+    });
+
+    // 2. Extract IS from user message
+    const hasIS = await this.contextManager.extractAndSaveIS(userId, message);
+
+    // 3. Get current session state
+    const state = await this.contextManager.getState(userId);
+    if (!state) {
+      throw new Error('세션을 찾을 수 없습니다.');
+    }
+
+    const isRolePlayMode = state.rolePlayMode || false;
+    const shouldGenerateScenario =
+      isRolePlayMode && this.isRolePlayTrigger(message) && !hasIS;
+
+    // 4. Stream Setup
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // 5. Get AI response (Streaming)
+    let aiFullResponse = '';
+
+    if (shouldGenerateScenario) {
+      // Role-play (using standard chat for now, streaming supported but prompt is fixed)
+      // We can't easily stream the custom scenario prompt because qwen.chatStream takes messages array
+      // Let's refactor generateRolePlayScenario to return messages or use chatStream directly
+      // For now, we will wait for full response on scenario (rare case) or just use chatStream with scenario prompt
+      // Let's copy logic from generateRolePlayScenario but use chatStream
+      
+      const scenarioPrompt = [
+        {
+          role: 'system' as const,
+          content: `당신은 Rust 시니어 개발자(Team Lead)입니다.
+사용자(주니어 개발자)가 "${state.currentTopic}" 개념에 대해 질문했습니다.
+
+다음 형식으로 **실제 코드 리뷰** 또는 **트러블 슈팅** 상황극을 연출하세요:
+
+🎬 **상황**: [프로덕션 코드에서 발생한 구체적인 문제 상황 설명]
+
+👥 **등장인물**:
+- 🧑‍💻 **나(주니어)**: 열정적이지만 실수를 한 개발자
+- 👨‍🏫 **팀장(당신)**: 친절하지만 코드 품질에 엄격한 멘토
+
+💬 **대화**:
+(주니어가 짠 문제의 코드를 보여주며 시작합니다. 3~4번의 티키타카)
+🧑‍💻: "팀장님, 이 코드에서 계속 에러가 나는데 왜 이러죠?"
+👨‍🏫: [문제점 지적 및 개념 설명]
+...
+
+💻 **올바른 솔루션**:
+\`\`\`rust
+// ❌ 기존 문제 코드 (Before)
+[버그가 있는 코드]
+
+// ✅ 개선된 코드 (After)
+[Best Practice가 적용된 코드]
+\`\`\`
+
+🎯 **팀장의 한마디**: [이 개념이 왜 중요한지 실무적 관점에서 조언]
+
+*제약사항*: 한국어로 자연스럽게 대화하세요.`,
+        },
+        {
+          role: 'user' as const,
+          content: `"${state.currentTopic}"를 실제 프로젝트에서 어떻게 사용하는지 보여줘.`,
+        },
+      ];
+      
+       aiFullResponse = await this.qwen.chatStream(scenarioPrompt, (token) => {
+        res.write(`data: ${JSON.stringify({ type: 'token', content: token })}\n\n`);
+      });
+
+    } else {
+      // Regular conversation
+      const prompt = await this.contextManager.buildPrompt(userId, message);
+      aiFullResponse = await this.qwen.chatStream(prompt, (token) => {
+        res.write(`data: ${JSON.stringify({ type: 'token', content: token })}\n\n`);
+      });
+    }
+
+    // 6. Save AI response to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'assistant',
+      content: aiFullResponse,
+    });
+    await this.contextManager.saveAIResponse(userId, aiFullResponse);
+
+    // 7. Get updated progress and send done event
+    const progress = await this.contextManager.getProgress(userId);
+    const updatedState = await this.contextManager.getState(userId);
+
+    const tip = hasIS
+      ? progress && progress.currentIndex < progress.totalTopics - 1
+        ? '✅ 훌륭합니다! "다음 주제"라고 입력하면 다음으로 넘어갑니다.'
+        : '✅ 모든 주제를 완료했습니다! 마크다운을 다운로드하세요.'
+      : '💡 <IS>태그로 요약해야 다음 단계로 진행됩니다.';
+
+    const doneData = {
+      type: 'done',
+      hasIS,
+      tip,
+      currentStep: updatedState?.stepCount || 0,
+      progress: progress || undefined,
+      isRolePlayMode,
+    };
+
+    res.write(`data: ${JSON.stringify(doneData)}\n\n`);
+    res.end();
+  }
 
   /**
    * Check if message triggers role-play mode
@@ -107,37 +229,39 @@ export class RustLearnService {
     const scenarioPrompt = [
       {
         role: 'system' as const,
-        content: `당신은 Rust 프로그래밍 튜터입니다.
+        content: `당신은 Rust 시니어 개발자(Team Lead)입니다.
+사용자(주니어 개발자)가 "${state.currentTopic}" 개념에 대해 질문했습니다.
 
-사용자가 "${state.currentTopic}" 개념을 실제로 언제, 어떻게 사용하는지 묻고 있습니다.
+다음 형식으로 **실제 코드 리뷰** 또는 **트러블 슈팅** 상황극을 연출하세요:
 
-반드시 한국어로만 답변하세요. 중국어와 영어 문장은 금지입니다.
+🎬 **상황**: [프로덕션 코드에서 발생한 구체적인 문제 상황 설명]
 
-다음 형식으로 생생한 개발 상황 시나리오를 만들어주세요:
-
-🎬 **상황**: [구체적인 개발 상황 설명]
-
-👤 **등장인물**:
-- [이름] ([역할]): [설명]
-- [이름] ([역할]): [설명]
+👥 **등장인물**:
+- 🧑‍💻 **나(주니어)**: 열정적이지만 실수를 한 개발자
+- 👨‍🏫 **팀장(당신)**: 친절하지만 코드 품질에 엄격한 멘토
 
 💬 **대화**:
-[등장인물들 간의 자연스러운 대화 - 3-5번의 왕복]
+(주니어가 짠 문제의 코드를 보여주며 시작합니다. 3~4번의 티키타카)
+🧑‍💻: "팀장님, 이 코드에서 계속 에러가 나는데 왜 이러죠?"
+👨‍🏫: [문제점 지적 및 개념 설명]
+...
 
-💻 **코드 예제**:
+💻 **올바른 솔루션**:
 \`\`\`rust
-// 문제 상황
-[코드]
+// ❌ 기존 문제 코드 (Before)
+[버그가 있는 코드]
 
-// 해결 방법
-[코드]
+// ✅ 개선된 코드 (After)
+[Best Practice가 적용된 코드]
 \`\`\`
 
-🎯 **핵심**: [이 개념이 왜 필요한지, 어떻게 도움이 되는지 한 문장으로]`,
+🎯 **팀장의 한마디**: [이 개념이 왜 중요한지 실무적 관점에서 조언]
+
+*제약사항*: 한국어로 자연스럽게 대화하세요.`,
       },
       {
         role: 'user' as const,
-        content: `"${state.currentTopic}"를 실제 프로젝트에서 어떻게 사용하는지 개발 시나리오로 보여줘.`,
+        content: `"${state.currentTopic}"를 실제 프로젝트에서 어떻게 사용하는지 보여줘.`,
       },
     ];
 
