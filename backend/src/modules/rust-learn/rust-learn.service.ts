@@ -1,46 +1,82 @@
 import { Injectable } from '@nestjs/common';
 import { ContextManagerService } from '../context-manager/context-manager.service';
 import { QwenService } from '../qwen/qwen.service';
+import { MessageRepository } from '../database/repositories/message.repository';
 
 @Injectable()
 export class RustLearnService {
   constructor(
     private contextManager: ContextManagerService,
     private qwen: QwenService,
+    private messageRepo: MessageRepository,
   ) {}
 
+  /**
+   * Check if message triggers role-play mode
+   */
   private isRolePlayTrigger(message: string): boolean {
-    const triggers = ['어떻게', '언제', '예시', '실제', '어떻게 사용', '언제 쓰', '실제로', '개발에서', '프로젝트에서', '어떻게 해'];
-    return triggers.some(trigger => message.includes(trigger));
+    const triggers = [
+      '어떻게',
+      '언제',
+      '예시',
+      '실제',
+      '어떻게 사용',
+      '언제 쓰',
+      '실제로',
+      '개발에서',
+      '프로젝트에서',
+      '어떻게 해',
+    ];
+    return triggers.some((trigger) => message.includes(trigger));
   }
 
+  /**
+   * Main chat logic with database persistence
+   */
   async chat(userId: string, message: string) {
-    // 1. IS 추출
-    const hasIS = this.contextManager.extractAndSaveIS(userId, message);
+    // 1. Save user message to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'user',
+      content: message,
+    });
 
-    // 2. 역할극 모드 체크
-    const state = this.contextManager.getState(userId);
-    const isRolePlayMode = state?.rolePlayMode || false;
-    const shouldGenerateScenario = isRolePlayMode && this.isRolePlayTrigger(message) && !hasIS;
+    // 2. Extract IS from user message
+    const hasIS = await this.contextManager.extractAndSaveIS(userId, message);
 
-    // 3. MEM1 방식 프롬프트 구성
-    let prompt = this.contextManager.buildPrompt(userId, message);
+    // 3. Get current session state
+    const state = await this.contextManager.getState(userId);
+    if (!state) {
+      throw new Error('세션을 찾을 수 없습니다.');
+    }
 
-    // 4. 역할극 시나리오가 필요하면 생성
+    const isRolePlayMode = state.rolePlayMode || false;
+    const shouldGenerateScenario =
+      isRolePlayMode && this.isRolePlayTrigger(message) && !hasIS;
+
+    // 4. Build MEM1 prompt
+    let prompt = await this.contextManager.buildPrompt(userId, message);
+
+    // 5. Get AI response
     let aiResponse = '';
     if (shouldGenerateScenario) {
       aiResponse = await this.generateRolePlayScenario(userId, message);
     } else {
-      // 4. Qwen 호출 (일반 응답)
+      // Regular conversation response
       aiResponse = await this.qwen.chat(prompt);
     }
 
-    // 5. 응답 저장
-    this.contextManager.saveAIResponse(userId, aiResponse);
+    // 6. Save AI response to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'assistant',
+      content: aiResponse,
+    });
+    await this.contextManager.saveAIResponse(userId, aiResponse);
 
-    // 6. 현재 상태 조회
-    const updatedState = this.contextManager.getState(userId);
-    const progress = this.contextManager.getProgress(userId);
+    // 7. Get updated progress
+    const progress = await this.contextManager.getProgress(userId);
+    const updatedState = await this.contextManager.getState(userId);
 
     return {
       response: aiResponse,
@@ -56,16 +92,26 @@ export class RustLearnService {
     };
   }
 
-  private async generateRolePlayScenario(userId: string, userMessage: string): Promise<string> {
-    const state = this.contextManager.getState(userId);
-    if (!state) return '세션을 찾을 수 없습니다.';
+  /**
+   * Generate role-play scenario for practical usage examples
+   */
+  private async generateRolePlayScenario(
+    userId: string,
+    userMessage: string,
+  ): Promise<string> {
+    const state = await this.contextManager.getState(userId);
+    if (!state) {
+      return '세션을 찾을 수 없습니다.';
+    }
 
-    const scenarioPrompt: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+    const scenarioPrompt = [
       {
-        role: 'system',
+        role: 'system' as const,
         content: `당신은 Rust 프로그래밍 튜터입니다.
 
 사용자가 "${state.currentTopic}" 개념을 실제로 언제, 어떻게 사용하는지 묻고 있습니다.
+
+반드시 한국어로만 답변하세요. 중국어와 영어 문장은 금지입니다.
 
 다음 형식으로 생생한 개발 상황 시나리오를 만들어주세요:
 
@@ -87,12 +133,10 @@ export class RustLearnService {
 [코드]
 \`\`\`
 
-🎯 **핵심**: [이 개념이 왜 필요한지, 어떻게 도움이 되는지 한 문장으로]
-
-반드시 한국어로만 작성하세요.`,
+🎯 **핵심**: [이 개념이 왜 필요한지, 어떻게 도움이 되는지 한 문장으로]`,
       },
       {
-        role: 'user',
+        role: 'user' as const,
         content: `"${state.currentTopic}"를 실제 프로젝트에서 어떻게 사용하는지 개발 시나리오로 보여줘.`,
       },
     ];
@@ -101,6 +145,7 @@ export class RustLearnService {
       const response = await this.qwen.chat(scenarioPrompt);
       return response;
     } catch (error) {
+      console.error('Role-play scenario generation failed:', error);
       return '역할극 시나리오 생성 중 오류가 발생했습니다. 다시 시도해주세요.';
     }
   }

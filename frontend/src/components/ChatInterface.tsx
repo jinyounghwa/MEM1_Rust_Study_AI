@@ -39,30 +39,92 @@ export default function ChatInterface() {
   const [rolePlayMode, setRolePlayMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize and restore sessions from localStorage
+  // Initialize and restore sessions from database or localStorage
   useEffect(() => {
-    const savedSessions = localStorage.getItem('rust_learn_sessions');
-    const savedSessionData = localStorage.getItem('rust_learn_session_data');
-    const savedCurrentId = localStorage.getItem('rust_learn_current_session');
+    const initializeSessions = async () => {
+      try {
+        // 1. 데이터베이스에서 세션 목록 조회
+        const dbSessions = await api.getSessions();
 
-    if (savedSessions) {
-      const parsedSessions = JSON.parse(savedSessions);
-      setSessions(parsedSessions);
+        if (dbSessions && dbSessions.length > 0) {
+          // 2. 데이터베이스에서 로드한 세션들을 localStorage 형식으로 변환
+          const convertedSessions: ChatSession[] = dbSessions.map(session => ({
+            id: session.id,
+            topics: session.topics,
+            startTime: session.startTime,
+            title: session.title,
+          }));
 
-      if (savedSessionData) {
-        setSessionData(JSON.parse(savedSessionData));
+          setSessions(convertedSessions);
+
+          // 3. 첫 번째 세션의 상세 정보 로드
+          const savedCurrentId = localStorage.getItem('rust_learn_current_session');
+          const sessionToLoad = savedCurrentId
+            ? dbSessions.find(s => s.id === savedCurrentId)
+            : dbSessions[0];
+
+          if (sessionToLoad) {
+            const sessionDetail = await api.loadSession(sessionToLoad.id);
+            if (sessionDetail) {
+              // 데이터베이스에서 로드한 세션 복원
+              const newSessionData: { [key: string]: SessionData } = {};
+              newSessionData[sessionToLoad.id] = {
+                userId: sessionDetail.session.userId,
+                topics: sessionDetail.session.topics,
+                started: sessionDetail.session.started,
+                messages: sessionDetail.messages.map(msg => ({
+                  role: msg.role,
+                  content: msg.content,
+                })),
+                tip: sessionDetail.session.started ? '학습이 진행 중입니다.' : '',
+                stepCount: sessionDetail.session.stepCount,
+                progress: sessionDetail.session.progress || null,
+                rolePlayMode: sessionDetail.session.rolePlayMode,
+                title: sessionToLoad.title,
+                startTime: sessionToLoad.startTime,
+              };
+              setSessionData(newSessionData);
+              loadSession(sessionToLoad.id, newSessionData);
+              localStorage.setItem('rust_learn_current_session', sessionToLoad.id);
+              return;
+            }
+          }
+        }
+
+        // 4. 데이터베이스에서 로드 실패 시 localStorage 사용
+        loadFromLocalStorage();
+      } catch (error) {
+        console.log('데이터베이스 연결 실패, localStorage에서 로드합니다.');
+        loadFromLocalStorage();
       }
+    };
 
-      if (savedCurrentId && parsedSessions.some((s: ChatSession) => s.id === savedCurrentId)) {
-        loadSession(savedCurrentId, JSON.parse(savedSessionData || '{}'));
-      } else if (parsedSessions.length > 0) {
-        loadSession(parsedSessions[0].id, JSON.parse(savedSessionData || '{}'));
+    const loadFromLocalStorage = () => {
+      const savedSessions = localStorage.getItem('rust_learn_sessions');
+      const savedSessionData = localStorage.getItem('rust_learn_session_data');
+      const savedCurrentId = localStorage.getItem('rust_learn_current_session');
+
+      if (savedSessions) {
+        const parsedSessions = JSON.parse(savedSessions);
+        setSessions(parsedSessions);
+
+        if (savedSessionData) {
+          setSessionData(JSON.parse(savedSessionData));
+        }
+
+        if (savedCurrentId && parsedSessions.some((s: ChatSession) => s.id === savedCurrentId)) {
+          loadSession(savedCurrentId, JSON.parse(savedSessionData || '{}'));
+        } else if (parsedSessions.length > 0) {
+          loadSession(parsedSessions[0].id, JSON.parse(savedSessionData || '{}'));
+        } else {
+          createNewSession();
+        }
       } else {
         createNewSession();
       }
-    } else {
-      createNewSession();
-    }
+    };
+
+    initializeSessions();
 
     // Open sidebar by default on desktop
     if (window.innerWidth >= 1024) {
@@ -163,7 +225,18 @@ export default function ChatInterface() {
     );
   };
 
-  const deleteSession = (sessionId: string) => {
+  const deleteSession = async (sessionId: string) => {
+    try {
+      // 데이터베이스에서 세션 삭제
+      const userId = sessionData[sessionId]?.userId;
+      if (userId) {
+        await api.deleteSession(userId);
+      }
+    } catch (error) {
+      console.error('Failed to delete session from database:', error);
+    }
+
+    // 로컬 상태에서 세션 삭제
     const newSessions = sessions.filter(s => s.id !== sessionId);
     const newData = { ...sessionData };
     delete newData[sessionId];

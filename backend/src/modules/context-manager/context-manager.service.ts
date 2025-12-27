@@ -1,65 +1,105 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { SessionRepository } from '../database/repositories/session.repository';
+import { MessageRepository } from '../database/repositories/message.repository';
+import { TopicISHistoryRepository } from '../database/repositories/topic-is-history.repository';
 import {
   ConversationState,
-  Message,
   QwenMessage,
 } from './types/conversation.types';
+import { Session } from '../database/entities/session.entity';
 
 @Injectable()
 export class ContextManagerService {
-  private sessions = new Map<string, ConversationState>();
+  constructor(
+    private readonly sessionRepo: SessionRepository,
+    private readonly messageRepo: MessageRepository,
+    private readonly topicISRepo: TopicISHistoryRepository,
+  ) {}
 
-  initSession(userId: string, topics: string | string[]): void {
+  /**
+   * Initialize a new learning session
+   */
+  async initSession(
+    userId: string,
+    topics: string | string[],
+  ): Promise<Session> {
     const topicArray = Array.isArray(topics) ? topics : [topics];
+    const title =
+      topicArray.length === 1
+        ? topicArray[0]
+        : `${topicArray[0]} 외 ${topicArray.length - 1}개`;
 
-    this.sessions.set(userId, {
-      currentIS: '',
-      currentTopic: topicArray[0],
+    return this.sessionRepo.save({
+      id: userId,
+      title,
       allTopics: topicArray,
+      currentTopic: topicArray[0],
       currentTopicIndex: 0,
-      topicISHistory: new Map(),
-      conversationHistory: [],
+      currentIS: '',
       lastAIResponse: '',
       stepCount: 0,
       rolePlayMode: false,
     });
   }
 
-  moveToNextTopic(userId: string): boolean {
-    const state = this.sessions.get(userId);
-    if (!state) throw new Error('세션을 찾을 수 없습니다.');
-
-    if (state.currentIS) {
-      state.topicISHistory.set(state.currentTopic, state.currentIS);
+  /**
+   * Move to next topic and save current IS to history
+   */
+  async moveToNextTopic(userId: string): Promise<boolean> {
+    const session = await this.sessionRepo.findOne(userId);
+    if (!session) {
+      throw new NotFoundException('세션을 찾을 수 없습니다.');
     }
 
-    if (state.currentTopicIndex < state.allTopics.length - 1) {
-      state.currentTopicIndex++;
-      state.currentTopic = state.allTopics[state.currentTopicIndex];
-      state.currentIS = '';
+    // Save current IS to topic_is_history
+    if (session.currentIS) {
+      await this.topicISRepo.save({
+        sessionId: userId,
+        topic: session.currentTopic,
+        isSummary: session.currentIS,
+      });
+    }
+
+    // Check if next topic exists
+    if (session.currentTopicIndex < session.allTopics.length - 1) {
+      const nextIndex = session.currentTopicIndex + 1;
+      await this.sessionRepo.update(userId, {
+        currentTopicIndex: nextIndex,
+        currentTopic: session.allTopics[nextIndex],
+        currentIS: '',
+      });
       return true;
     }
 
     return false;
   }
 
-  getPreviousTopicsSummary(userId: string): string {
-    const state = this.sessions.get(userId);
-    if (!state || state.currentTopicIndex === 0) return '';
+  /**
+   * Get previous topics' IS summaries for prompt building
+   * MEM1 principle: Only IS summaries, no full conversation history
+   */
+  async getPreviousTopicsSummary(userId: string): Promise<string> {
+    const session = await this.sessionRepo.findOne(userId);
+    if (!session || session.currentTopicIndex === 0) {
+      return '';
+    }
+
+    const topicHistories = await this.topicISRepo.findBySessionId(userId);
+    if (topicHistories.length === 0) {
+      return '';
+    }
 
     let summary = '\n\n**📚 이전에 학습한 내용 (필수 참고):**\n';
-    for (let i = 0; i < state.currentTopicIndex; i++) {
-      const topic = state.allTopics[i];
-      const is = state.topicISHistory.get(topic);
-      if (is) {
-        summary += `\n▪️ **${topic}**: ${is}`;
+    for (const history of topicHistories) {
+      if (history.topic !== session.currentTopic) {
+        summary += `\n▪️ **${history.topic}**: ${history.isSummary}`;
       }
     }
 
-    // 현재 주제와 이전 주제의 연결고리 명시
-    if (state.currentTopicIndex > 0) {
-      const previousTopic = state.allTopics[state.currentTopicIndex - 1];
-      const currentTopic = state.currentTopic;
+    // Add connection between topics
+    if (session.currentTopicIndex > 0) {
+      const previousTopic = session.allTopics[session.currentTopicIndex - 1];
+      const currentTopic = session.currentTopic;
       summary += `\n\n**🔗 주제 간 연결고리:**\n`;
       summary += `"${previousTopic}" → "${currentTopic}"\n`;
       summary += `이전 주제를 기초로 삼아 현재 주제를 설명하세요.`;
@@ -68,34 +108,49 @@ export class ContextManagerService {
     return summary;
   }
 
-  toggleRolePlayMode(userId: string): boolean {
-    const state = this.sessions.get(userId);
-    if (!state) throw new Error('세션을 찾을 수 없습니다.');
+  /**
+   * Toggle role-play mode
+   */
+  async toggleRolePlayMode(userId: string): Promise<boolean> {
+    const session = await this.sessionRepo.findOneLight(userId);
+    if (!session) {
+      throw new NotFoundException('세션을 찾을 수 없습니다.');
+    }
 
-    state.rolePlayMode = !state.rolePlayMode;
-    return state.rolePlayMode;
+    const newRolePlayMode = !session.rolePlayMode;
+    await this.sessionRepo.update(userId, {
+      rolePlayMode: newRolePlayMode,
+    });
+
+    return newRolePlayMode;
   }
 
-  getProgress(userId: string) {
-    const state = this.sessions.get(userId);
-    if (!state) return null;
+  /**
+   * Get current session progress
+   */
+  async getProgress(userId: string) {
+    const session = await this.sessionRepo.findOneLight(userId);
+    if (!session) return null;
 
     return {
-      currentTopic: state.currentTopic,
-      currentIndex: state.currentTopicIndex,
-      totalTopics: state.allTopics.length,
-      completedTopics: state.allTopics.slice(0, state.currentTopicIndex),
+      currentTopic: session.currentTopic,
+      currentIndex: session.currentTopicIndex,
+      totalTopics: session.allTopics.length,
+      completedTopics: session.allTopics.slice(0, session.currentTopicIndex),
     };
   }
 
-  buildInitialTopicPrompt(userId: string): QwenMessage[] {
-    const state = this.sessions.get(userId);
-
-    if (!state) {
-      throw new Error('세션을 찾을 수 없습니다. 먼저 학습을 시작하세요.');
+  /**
+   * Build initial topic explanation prompt
+   * MEM1 Principle: Only previous IS summaries, no full conversation history
+   */
+  async buildInitialTopicPrompt(userId: string): Promise<QwenMessage[]> {
+    const session = await this.sessionRepo.findOne(userId);
+    if (!session) {
+      throw new NotFoundException('세션을 찾을 수 없습니다. 먼저 학습을 시작하세요.');
     }
 
-    const previousSummary = this.getPreviousTopicsSummary(userId);
+    const previousSummary = await this.getPreviousTopicsSummary(userId);
 
     const systemPrompt: QwenMessage = {
       role: 'system',
@@ -112,7 +167,7 @@ export class ContextManagerService {
 ❌ "The Option type is used for null safety" (영어 문장)
 ✅ "Option 타입은 값이 있을 수도, 없을 수도 있는 상황을 나타냅니다"
 
-"${state.currentTopic}" 주제를 명확하게 설명하세요.
+"${session.currentTopic}" 주제를 명확하게 설명하세요.
 - 핵심 개념 중심 설명 (150-250단어)
 - 실제 사용 사례 2-3개 포함
 - 쉽고 이해하기 편한 한국어로 사용
@@ -121,27 +176,30 @@ ${previousSummary ? `- 이전 학습 내용과 연결지어 설명:\n${previousS
 
     const userMsg: QwenMessage = {
       role: 'user',
-      content: `"${state.currentTopic}"를 설명해줘.`,
+      content: `"${session.currentTopic}"를 설명해줘.`,
     };
 
     return [systemPrompt, userMsg];
   }
 
-  buildPrompt(userId: string, userMessage: string): QwenMessage[] {
-    const state = this.sessions.get(userId);
-
-    if (!state) {
-      throw new Error('세션을 찾을 수 없습니다. 먼저 학습을 시작하세요.');
+  /**
+   * Build prompt for chat interaction
+   * MEM1 Principle: Only previous IS summaries + current message, no conversation history
+   */
+  async buildPrompt(userId: string, userMessage: string): Promise<QwenMessage[]> {
+    const session = await this.sessionRepo.findOne(userId);
+    if (!session) {
+      throw new NotFoundException('세션을 찾을 수 없습니다. 먼저 학습을 시작하세요.');
     }
 
-    const previousSummary = this.getPreviousTopicsSummary(userId);
+    const previousSummary = await this.getPreviousTopicsSummary(userId);
 
     const progress =
-      state.allTopics.length > 1
-        ? `\n**학습 진행 상황**: ${state.currentTopicIndex + 1}/${state.allTopics.length} (${state.allTopics.join(' → ')})`
+      session.allTopics.length > 1
+        ? `\n**학습 진행 상황**: ${session.currentTopicIndex + 1}/${session.allTopics.length} (${session.allTopics.join(' → ')})`
         : '';
 
-    const rolePlayInstruction = state.rolePlayMode
+    const rolePlayInstruction = session.rolePlayMode
       ? `
 
 **🎭 역할극 모드 활성화됨**
@@ -192,15 +250,15 @@ let name = user.name.unwrap_or("익명".to_string());
 **핵심 규칙**:
 1. 학생의 <IS>태그 내용을 평가하세요
 2. 정확하면: 칭찬 + ${
-     state.allTopics.length > 1 &&
-     state.currentTopicIndex < state.allTopics.length - 1
+     session.allTopics.length > 1 &&
+     session.currentTopicIndex < session.allTopics.length - 1
        ? `"다음 주제로 진행하세요"`
        : `"완료! 축하합니다"`
    }
 3. 부족하면: 구체적으로 설명하고 다시 요약하라고 하세요
 4. <IS>가 없으면: "<IS>태그로 요약해주세요"라고 안내하세요
 ${rolePlayInstruction}${
-  state.allTopics.length > 1 && previousSummary
+  session.allTopics.length > 1 && previousSummary
     ? `
 ${previousSummary}
 
@@ -216,131 +274,107 @@ ${previousSummary}
       content: userMessage,
     };
 
+    // ✅ MEM1 Principle: Only system prompt + current message (no conversation history)
     return [systemPrompt, userMsg];
   }
 
-  extractAndSaveIS(userId: string, userMessage: string): boolean {
+  /**
+   * Extract and save IS from user message
+   */
+  async extractAndSaveIS(userId: string, userMessage: string): Promise<boolean> {
     const isMatch = userMessage.match(/<IS>([\s\S]*?)<\/IS>/i);
 
-    const state = this.sessions.get(userId);
-    if (!state) return false;
-
     if (isMatch) {
-      state.currentIS = isMatch[1].trim();
-      state.stepCount += 1;
+      const extractedIS = isMatch[1].trim();
+      await this.sessionRepo.update(userId, {
+        currentIS: extractedIS,
+      });
+      // Increment step count
+      const session = await this.sessionRepo.findOneLight(userId);
+      if (session) {
+        await this.sessionRepo.update(userId, {
+          stepCount: session.stepCount + 1,
+        });
+      }
     }
-
-    state.conversationHistory.push({
-      role: 'user',
-      content: userMessage,
-      timestamp: new Date(),
-    });
 
     return !!isMatch;
   }
 
-  saveAIResponse(userId: string, response: string): void {
-    const state = this.sessions.get(userId);
-    if (!state) return;
-
-    state.lastAIResponse = response;
-    state.conversationHistory.push({
-      role: 'assistant',
-      content: response,
-      timestamp: new Date(),
+  /**
+   * Save AI response
+   */
+  async saveAIResponse(userId: string, response: string): Promise<void> {
+    await this.sessionRepo.update(userId, {
+      lastAIResponse: response,
     });
   }
 
-  getState(userId: string): ConversationState | undefined {
-    return this.sessions.get(userId);
+  /**
+   * Get current session state
+   */
+  async getState(userId: string): Promise<Session | null> {
+    return this.sessionRepo.findOne(userId);
   }
 
-  generateMarkdown(userId: string): string {
-    const state = this.sessions.get(userId);
-
-    if (!state) {
-      throw new Error('세션을 찾을 수 없습니다.');
+  /**
+   * Generate markdown export
+   * Uses full conversation history from database
+   */
+  async generateMarkdown(userId: string): Promise<string> {
+    const session = await this.sessionRepo.findOne(userId);
+    if (!session) {
+      throw new NotFoundException('세션을 찾을 수 없습니다.');
     }
 
-    const isMultiObjective = state.allTopics.length > 1;
+    const isMultiObjective = session.allTopics.length > 1;
     let markdown = `# 🦀 Rust 학습 노트${isMultiObjective ? ' (Multi-Objective)' : ''}\n\n`;
 
     if (isMultiObjective) {
       markdown += `## 📚 학습 주제\n\n`;
-      state.allTopics.forEach((topic, idx) => {
+      session.allTopics.forEach((topic, idx) => {
         const status =
-          idx < state.currentTopicIndex
+          idx < session.currentTopicIndex
             ? '✅'
-            : idx === state.currentTopicIndex
+            : idx === session.currentTopicIndex
               ? '🔄'
               : '⏳';
         markdown += `${idx + 1}. ${status} ${topic}\n`;
       });
       markdown += `\n`;
     } else {
-      markdown += `**주제**: ${state.currentTopic}\n\n`;
+      markdown += `**주제**: ${session.currentTopic}\n\n`;
     }
 
     markdown += `**생성 일시**: ${new Date().toLocaleString('ko-KR')}\n`;
-    markdown += `**총 학습 단계**: ${state.stepCount}단계\n\n`;
+    markdown += `**총 학습 단계**: ${session.stepCount}단계\n\n`;
     markdown += `---\n\n`;
 
-    if (isMultiObjective) {
-      state.allTopics.forEach((topic, topicIdx) => {
-        markdown += `## 📖 주제 ${topicIdx + 1}: ${topic}\n\n`;
+    // Load all messages from database
+    const messages = await this.messageRepo.findBySessionId(userId);
 
-        const topicIS = state.topicISHistory.get(topic);
-        if (topicIS) {
-          markdown += `### ✅ 최종 이해 요약\n\n`;
-          markdown += `<IS>${topicIS}</IS>\n\n`;
-        }
+    let stepNum = 1;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
 
-        let stepNum = 1;
-        for (let i = 0; i < state.conversationHistory.length; i++) {
-          const msg = state.conversationHistory[i];
+      if (msg.role === 'user') {
+        const hasIS = /<IS>([\s\S]*?)<\/IS>/i.test(msg.content);
 
-          if (msg.content.includes(topic)) {
-            if (msg.role === 'user') {
-              const hasIS = /<IS>([\s\S]*?)<\/IS>/i.test(msg.content);
-              if (hasIS) {
-                markdown += `#### Step ${stepNum}: 나의 이해\n\n`;
-                markdown += `${msg.content}\n\n`;
-              }
-            } else if (msg.role === 'assistant') {
-              markdown += `**AI 피드백**:\n\n${msg.content}\n\n`;
-              stepNum++;
-            }
-          }
-        }
-
-        markdown += `---\n\n`;
-      });
-    } else {
-      let stepNum = 1;
-      for (let i = 0; i < state.conversationHistory.length; i++) {
-        const msg = state.conversationHistory[i];
-
-        if (msg.role === 'user') {
-          const hasIS = /<IS>([\s\S]*?)<\/IS>/i.test(msg.content);
-
-          if (hasIS) {
-            markdown += `## 📝 Step ${stepNum}: 나의 이해\n\n`;
-            markdown += `${msg.content}\n\n`;
-          } else {
-            markdown += `### 💬 질문/응답\n\n`;
-            markdown += `${msg.content}\n\n`;
-          }
-        } else if (msg.role === 'assistant') {
-          markdown += `### 🤖 AI 피드백\n\n`;
+        if (hasIS) {
+          markdown += `## 📝 Step ${stepNum}: 나의 이해\n\n`;
           markdown += `${msg.content}\n\n`;
-          markdown += `---\n\n`;
+        } else {
+          markdown += `### 💬 질문/응답\n\n`;
+          markdown += `${msg.content}\n\n`;
+        }
+      } else if (msg.role === 'assistant') {
+        markdown += `### 🤖 AI 피드백\n\n`;
+        markdown += `${msg.content}\n\n`;
+        markdown += `---\n\n`;
 
-          if (i > 0 && state.conversationHistory[i - 1].role === 'user') {
-            const prevHasIS = /<IS>([\s\S]*?)<\/IS>/i.test(
-              state.conversationHistory[i - 1].content,
-            );
-            if (prevHasIS) stepNum++;
-          }
+        if (i > 0 && messages[i - 1].role === 'user') {
+          const prevHasIS = /<IS>([\s\S]*?)<\/IS>/i.test(messages[i - 1].content);
+          if (prevHasIS) stepNum++;
         }
       }
     }
@@ -348,14 +382,16 @@ ${previousSummary}
     markdown += `\n## ✅ 학습 완료!\n\n`;
 
     if (isMultiObjective) {
-      markdown += `총 ${state.allTopics.length}개의 주제를 ${state.stepCount}단계로 나누어 학습했습니다.\n\n`;
+      const topicHistories = await this.topicISRepo.findBySessionId(userId);
+      markdown += `총 ${session.allTopics.length}개의 주제를 ${session.stepCount}단계로 나누어 학습했습니다.\n\n`;
       markdown += `**학습한 주제들의 연결고리**:\n`;
-      state.allTopics.forEach((topic, idx) => {
-        const is = state.topicISHistory.get(topic) || '(요약 없음)';
+      session.allTopics.forEach((topic, idx) => {
+        const history = topicHistories.find((h) => h.topic === topic);
+        const is = history?.isSummary || '(요약 없음)';
         markdown += `${idx + 1}. **${topic}**: ${is.substring(0, 100)}...\n`;
       });
     } else {
-      markdown += `총 ${state.stepCount}단계의 학습을 완료했습니다.`;
+      markdown += `총 ${session.stepCount}단계의 학습을 완료했습니다.`;
     }
 
     markdown += `\n\n수고하셨습니다! 🎉\n`;
