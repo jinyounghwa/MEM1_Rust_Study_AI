@@ -202,7 +202,14 @@ export class RustLearnController {
         );
       }
 
-      const filename = `rust-study-${state.currentTopic}-${Date.now()}.md`;
+      // 파일명을 ASCII 문자만 사용하도록 변환 (한글 등 비ASCII 문자 제거)
+      const safeTopicName = state.currentTopic
+        .replace(/[^a-zA-Z0-9]/g, '_')  // 영문숫자 외의 문자를 언더스코어로 변환
+        .substring(0, 30)  // 길이 제한
+        .replace(/_+/g, '_')  // 연속된 언더스코어를 하나로
+        .replace(/^_|_$/g, '');  // 앞뒤 언더스코어 제거
+
+      const filename = `rust-study-${safeTopicName}-${Date.now()}.md`;
 
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
       res.setHeader(
