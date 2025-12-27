@@ -41,3 +41,17 @@ Thumbs.db
 # Project files
 claude.md
 2506.15841v2.pdf
+
+# MLX and Model files (too large for Git)
+models/
+mlx_env/
+*.incomplete
+*.safetensors
+*.bin
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.python-version
