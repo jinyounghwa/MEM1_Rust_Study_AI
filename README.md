@@ -346,10 +346,6 @@ kill -9 <PID>
 
 ---
 
-## 관련 문서
-
-- **[TECHNICAL_SPECIFICATION.md](./TECHNICAL_SPECIFICATION.md)**: 상세 기술 명세 (다른 언어로 구현 시 참고)
-- **[CLAUDE.md](./CLAUDE.md)**: 프로젝트 구현 가이드
 
 ---
 
