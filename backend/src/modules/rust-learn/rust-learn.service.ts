@@ -215,6 +215,114 @@ export class RustLearnService {
   }
 
   /**
+   * Streaming start learning - generates initial topic explanation with streaming
+   */
+  async startLearningStream(userId: string, res: Response) {
+    const state = await this.contextManager.getState(userId);
+    if (!state) {
+      throw new Error('세션을 찾을 수 없습니다.');
+    }
+
+    // Stream Setup
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Get initial topic prompt
+    const initialPrompt = await this.contextManager.buildInitialTopicPrompt(userId);
+
+    // Stream the response
+    let aiFullResponse = '';
+    aiFullResponse = await this.qwen.chatStream(initialPrompt, (token) => {
+      res.write(`data: ${JSON.stringify({ type: 'token', content: token })}\n\n`);
+    });
+
+    // Save AI response to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'assistant',
+      content: aiFullResponse,
+    });
+    await this.contextManager.saveAIResponse(userId, aiFullResponse);
+
+    // Send done event
+    const progress = await this.contextManager.getProgress(userId);
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      progress,
+      tip: 'AI의 설명을 읽고 배운 내용을 <IS>요약</IS> 형식으로 작성해주세요.'
+    })}\n\n`);
+    res.end();
+  }
+
+  /**
+   * Streaming next topic - generates next topic explanation with streaming
+   */
+  async nextTopicStream(userId: string, res: Response) {
+    const state = await this.contextManager.getState(userId);
+    if (!state) {
+      throw new Error('세션을 찾을 수 없습니다.');
+    }
+
+    const previousTopic = state.currentTopic;
+    const moved = await this.contextManager.moveToNextTopic(userId);
+
+    if (!moved) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      res.write(`data: ${JSON.stringify({
+        type: 'done',
+        message: '🎉 모든 주제를 완료했습니다! 축하합니다!',
+        allCompleted: true
+      })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Stream Setup
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const progress = await this.contextManager.getProgress(userId);
+
+    // Send transition message first
+    res.write(`data: ${JSON.stringify({
+      type: 'transition',
+      message: `✨ ${progress?.currentTopic} 주제로 넘어갑니다!`,
+      previousTopic,
+      progress
+    })}\n\n`);
+
+    // Get initial topic prompt for new topic
+    const initialPrompt = await this.contextManager.buildInitialTopicPrompt(userId);
+
+    // Stream the response
+    let aiFullResponse = '';
+    aiFullResponse = await this.qwen.chatStream(initialPrompt, (token) => {
+      res.write(`data: ${JSON.stringify({ type: 'token', content: token })}\n\n`);
+    });
+
+    // Save AI response to database
+    await this.messageRepo.save({
+      sessionId: userId,
+      role: 'assistant',
+      content: aiFullResponse,
+    });
+    await this.contextManager.saveAIResponse(userId, aiFullResponse);
+
+    // Send done event
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      progress,
+      tip: '새로운 주제의 설명을 읽고 <IS>태그로 요약해주세요!'
+    })}\n\n`);
+    res.end();
+  }
+
+  /**
    * Generate role-play scenario for practical usage examples
    */
   private async generateRolePlayScenario(

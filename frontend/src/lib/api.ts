@@ -163,6 +163,98 @@ export const api = {
     }
   },
 
+  // 스트리밍으로 학습 시작 (초기 설명을 실시간으로 받음)
+  async *startLearningStream(userId: string, topics: string | string[]) {
+    try {
+      const response = await fetch(`${API_BASE}/start/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId, topics }),
+      });
+
+      if (!response.body) throw new Error('ReadableStream not supported');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+
+          try {
+            const jsonStr = trimmed.substring(6);
+            const data = JSON.parse(jsonStr);
+            yield data;
+          } catch (e) {
+            console.warn('SSE parsing error:', e);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`API Error (startLearningStream): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  },
+
+  // 스트리밍으로 다음 주제 이동 (설명을 실시간으로 받음)
+  async *nextTopicStream(userId: string) {
+    try {
+      const response = await fetch(`${API_BASE}/next-topic/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId }),
+      });
+
+      if (!response.body) throw new Error('ReadableStream not supported');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+
+          try {
+            const jsonStr = trimmed.substring(6);
+            const data = JSON.parse(jsonStr);
+            yield data;
+          } catch (e) {
+            console.warn('SSE parsing error:', e);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`API Error (nextTopicStream): ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  },
+
   // 스트리밍 채팅 메시지 전송
   async *streamMessage(userId: string, message: string) {
     try {

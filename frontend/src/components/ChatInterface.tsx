@@ -304,25 +304,14 @@ export default function ChatInterface() {
     }
 
     setLoading(true);
+    setStarted(true);
+    setMessages([{ role: 'assistant', content: '' }]); // Empty message for streaming
+
     try {
       const topicsParam = validTopics.length === 1 ? validTopics[0] : validTopics;
-      const result = await api.startLearning(userId, topicsParam);
-      setStarted(true);
-      setMessages([]);
 
-      // 첫 번째 주제의 설명을 메시지로 표시
-      if (result.explanation) {
-        setMessages([
-          {
-            role: 'assistant',
-            content: result.explanation,
-          },
-        ]);
-      }
-
-      setTip(result.instruction);
-
-      if (result.isMultiObjective) {
+      // Multi-Objective progress setup
+      if (validTopics.length > 1) {
         setProgress({
           currentTopic: validTopics[0],
           currentIndex: 0,
@@ -331,10 +320,30 @@ export default function ChatInterface() {
         });
       }
 
-      // Save current session
-      saveCurrentSession();
+      // Use streaming API for faster initial response
+      for await (const data of api.startLearningStream(userId, topicsParam)) {
+        if (data.type === 'token' && typeof data.content === 'string') {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMsg = newMessages[newMessages.length - 1];
+            if (lastMsg.role === 'assistant') {
+              newMessages[newMessages.length - 1] = {
+                ...lastMsg,
+                content: lastMsg.content + data.content,
+              };
+            }
+            return newMessages;
+          });
+        } else if (data.type === 'done') {
+          if (data.tip) setTip(data.tip);
+          if (data.progress) setProgress(data.progress);
+          saveCurrentSession();
+        }
+      }
     } catch (error) {
       alert('학습 시작 실패: ' + (error as Error).message);
+      setStarted(false);
+      setMessages([]);
     } finally {
       setLoading(false);
     }
@@ -394,39 +403,58 @@ export default function ChatInterface() {
     if (!progress) return;
 
     setLoading(true);
+
+    // Add empty message for streaming
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
     try {
-      const result = await api.nextTopic(userId);
-      if (result.success) {
-        setProgress(result.progress);
-
-        // 새 주제의 설명을 메시지에 추가
-        const newMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-
-        // 주제 전환 메시지
-        newMessages.push({
-          role: 'assistant',
-          content: result.message,
-        });
-
-        // 주제 간 연결고리 설명
-        if (result.transitionTip) {
-          newMessages.push({
-            role: 'assistant',
-            content: `**📌 주제 간 연결고리:**\n\n${result.transitionTip}`,
+      // Use streaming API for faster response
+      for await (const data of api.nextTopicStream(userId)) {
+        if (data.type === 'transition') {
+          // Update the last message with transition info
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMsg = newMessages[newMessages.length - 1];
+            if (lastMsg.role === 'assistant') {
+              newMessages[newMessages.length - 1] = {
+                ...lastMsg,
+                content: data.message + '\n\n',
+              };
+            }
+            return newMessages;
           });
-        }
-
-        // 새 주제의 상세한 설명
-        if (result.explanation) {
-          newMessages.push({
-            role: 'assistant',
-            content: result.explanation,
+          if (data.progress) setProgress(data.progress);
+        } else if (data.type === 'token' && typeof data.content === 'string') {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMsg = newMessages[newMessages.length - 1];
+            if (lastMsg.role === 'assistant') {
+              newMessages[newMessages.length - 1] = {
+                ...lastMsg,
+                content: lastMsg.content + data.content,
+              };
+            }
+            return newMessages;
           });
+        } else if (data.type === 'done') {
+          if (data.allCompleted) {
+            // All topics completed
+            setMessages((prev) => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant') {
+                newMessages[newMessages.length - 1] = {
+                  ...lastMsg,
+                  content: data.message || '🎉 모든 주제를 완료했습니다!',
+                };
+              }
+              return newMessages;
+            });
+          }
+          if (data.tip) setTip(data.tip);
+          if (data.progress) setProgress(data.progress);
+          saveCurrentSession();
         }
-
-        setMessages((prev) => [...prev, ...newMessages]);
-        setTip('새로운 주제의 설명을 읽고 <IS>태그로 요약해주세요! 😊');
-        saveCurrentSession();
       }
     } catch (error) {
       alert('주제 변경 실패: ' + (error as Error).message);

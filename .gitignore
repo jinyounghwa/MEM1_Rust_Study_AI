@@ -41,6 +41,7 @@ Thumbs.db
 # Project files
 claude.md
 2506.15841v2.pdf
+TECHNICAL_SPECIFICATION.md
 
 # MLX and Model files (too large for Git)
 models/

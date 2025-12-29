@@ -112,6 +112,62 @@ export class RustLearnController {
   }
 
   /**
+   * 학습 시작 (스트리밍) - 초기 설명을 스트리밍으로 제공
+   */
+  @Post('start/stream')
+  async startLearningStream(
+    @Body() body: { userId: string; topics: string | string[] },
+    @Res() res: Response,
+  ) {
+    const { userId, topics } = body;
+
+    try {
+      const topicsArray = Array.isArray(topics) ? topics : [topics];
+
+      // Initialize session in database
+      await this.contextManager.initSession(userId, topicsArray);
+
+      // Stream the initial explanation
+      await this.rustLearnService.startLearningStream(userId, res);
+    } catch (error) {
+      console.error('Start streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Start streaming failed' });
+      } else {
+        res.end();
+      }
+    }
+  }
+
+  /**
+   * 다음 주제 (스트리밍) - 다음 주제 설명을 스트리밍으로 제공
+   */
+  @Post('next-topic/stream')
+  async nextTopicStream(
+    @Body() body: { userId: string },
+    @Res() res: Response,
+  ) {
+    const { userId } = body;
+
+    try {
+      const state = await this.contextManager.getState(userId);
+      if (!state) {
+        res.status(404).json({ message: '세션을 찾을 수 없습니다.' });
+        return;
+      }
+
+      await this.rustLearnService.nextTopicStream(userId, res);
+    } catch (error) {
+      console.error('Next topic streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Next topic streaming failed' });
+      } else {
+        res.end();
+      }
+    }
+  }
+
+  /**
    * 다음 주제로 이동
    */
   @Post('next-topic')
